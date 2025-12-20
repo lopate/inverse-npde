@@ -1,5 +1,5 @@
 # Fdb version 4
-["pdflatex"] 1766241745.9297 "/home/sasha/inverse-npde/slides/main.tex" "main.pdf" "main" 1766241747.64871 0
+["pdflatex"] 1766244280.63002 "/home/sasha/inverse-npde/slides/main.tex" "main.pdf" "main" 1766244282.05331 0
   "../figures/head_mesh.jpg" 1766240673.23048 52252 365c2b77ef0e936f1b480365aab4a912 ""
   "../figures/head_surface_mesh.jpg" 1766240671.45448 97448 8b48facb8503f4e78246c1fadf9113cf ""
   "../figures/synthetic_head_views.png" 1766213470.21576 326023 7c81e8e1bf21030492024d0032d939f4 ""
@@ -11,7 +11,7 @@
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lass1095.tfm" 1766213367.30777 3332 7d553688e65d94749468cb72214713ce ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lass1200.tfm" 1766213382.05977 3328 2be4722f1b98ee4842bc3d7c90c43abf ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lass1440.tfm" 1766213372.99577 3316 74d2bae6468930ee61fdea11798112e7 ""
-  "/home/sasha/inverse-npde/slides/main.tex" 1766241745.39045 12620 c5141a7b8389062bb869319afd22c215 ""
+  "/home/sasha/inverse-npde/slides/main.tex" 1766244280.39036 13157 9685e6dee1b75f4a762413b2c3fd6850 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmex7.tfm" 1246382020 1004 54797486969f23fa377b128694d548df ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmex8.tfm" 1246382020 988 bdf658c3bfc2d96d3c8b02cfc1c94c20 ""
@@ -275,10 +275,10 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1766213231.68777 5472669 54eaf61a88b6b7896ebd0dac973cb29c ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1766213297 8214364 485d2b52162761f4f77dcbde39f44314 ""
-  "main.aux" 1766241747.49845 2403 ea407e991bb20a597ab1efd46e1d6865 "pdflatex"
-  "main.nav" 1766241747.49845 1295 ef040a83926d85743749b42a2275f515 "pdflatex"
-  "main.out" 1766241746.98645 0 d41d8cd98f00b204e9800998ecf8427e "pdflatex"
-  "main.tex" 1766241745.39045 12620 c5141a7b8389062bb869319afd22c215 ""
+  "main.aux" 1766244281.93836 2403 ea407e991bb20a597ab1efd46e1d6865 "pdflatex"
+  "main.nav" 1766244281.93836 1295 ef040a83926d85743749b42a2275f515 "pdflatex"
+  "main.out" 1766244281.42236 0 d41d8cd98f00b204e9800998ecf8427e "pdflatex"
+  "main.tex" 1766244280.39036 13157 9685e6dee1b75f4a762413b2c3fd6850 ""
   (generated)
   "main.aux"
   "main.log"
