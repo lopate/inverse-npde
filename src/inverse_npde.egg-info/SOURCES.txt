@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+src/inverse_npde/__init__.py
+src/inverse_npde/julia_interface.py
+src/inverse_npde.egg-info/PKG-INFO
+src/inverse_npde.egg-info/SOURCES.txt
+src/inverse_npde.egg-info/dependency_links.txt
+src/inverse_npde.egg-info/requires.txt
+src/inverse_npde.egg-info/top_level.txt
+src/neural_pde_solver/InverseNpde.jl
+src/neural_pde_solver/NeuralNetwork.jl
+src/neural_pde_solver/Optimization.jl
+src/neural_pde_solver/PDEDefinitions.jl
+src/neural_pde_solver/__init__.py
+tests/test_juliacall_simple.py

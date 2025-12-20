@@ -1,37 +1,36 @@
 # Основные зависимости для обработки EEG данных
-mne>=1.5.0
-numpy>=1.21.0
-xarray>=2022.3.0
-pandas>=1.5.0
-matplotlib>=3.5.0
+mne>=1.11.0
+numpy>=2.0.0
+xarray>=2024.0.0
+pandas>=2.0.0
+matplotlib>=3.8.0
 
 # Утилиты для работы с файлами и путями
-glob2>=0.7
-natsort>=8.2.0
+natsort>=8.4.0
 
 # Отладка и диагностика
-pdbpp>=0.10.3
-
-# Работа с предупреждениями
-warnings
+pdbpp>=0.11.0
 
 # Опциональные зависимости для расширенной функциональности
-scipy>=1.9.0
-scikit-learn>=1.1.0
-seaborn>=0.11.0
-plotly>=5.10.0
+scipy>=1.12.0
+scikit-learn>=1.4.0
+seaborn>=0.13.0
+plotly>=5.20.0
 jupyter>=1.0.0
-ipywidgets>=7.7.0
-
-# Для интеграции с Julia (опционально)
-juliacall>=0.9.0
-pyjulia>=0.5.0
+ipywidgets>=8.1.0
 
 # Для работы с большими данными
-dask>=2022.7.0
-zarr>=2.12.0
+dask>=2024.0.0
+zarr>=2.16.0
 
 # Линтеры и форматирование кода (для разработки)
-flake8>=5.0.0
-black>=22.0.0
-isort>=5.10.0
+flake8>=7.0.0
+black>=24.0.0
+isort>=5.13.0
+
+# Для работы с ноутбуками
+jupyterlab>=4.0.0
+notebook>=7.0.0
+
+# Julia-Python интеграция через JuliaCall
+juliacall==0.9.31

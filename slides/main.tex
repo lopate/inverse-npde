@@ -1,0 +1,258 @@
+\documentclass{beamer}
+\usecolortheme{beaver}
+\beamertemplatenavigationsymbolsempty
+\setbeamertemplate{blocks}[rounded=true, shadow=true]
+\setbeamertemplate{footline}[page number]
+\setbeamertemplate{caption}{\raggedright\insertcaption\par}
+%
+\usepackage[utf8]{inputenc}
+\usepackage[english, russian]{babel}
+\usepackage{amssymb,amsfonts,amsmath,mathtext}
+%\usepackage{subfig}
+\usepackage[all]{xy} % xy package for diagrams
+\usepackage{array}
+\usepackage{multicol}% many columns in slide
+\usepackage{hhline}%tables
+\usepackage{multirow}
+\usepackage{graphicx}
+\graphicspath{{figures/}}  
+\usepackage{wrapfig}%Обтекание фигур (таблиц, картинок и прочего)
+
+% Your figures are here:
+
+\title[Обратные задачи моделирования nPDE] %optional
+{Обратные задачи в моделировании нейронных дифференциальных уравнений в частных производных}
+
+
+\author[А. Терентьев] % (optional)
+{Александр Терентьев}
+
+\institute[MIPT] % (optional)
+{
+  
+  Московский физико-технический институт, 
+  
+  Физтех-школа прикладной математики и информатики\\
+
+  Кафедра интеллектуальных систем
+
+  Научный руководитель: д.ф .- м.н. Стрижов Вадим Викторович
+
+}
+
+
+
+% 右下角使用logo的方式
+% \logo{\includegraphics[height=1cm]{overleaf-logo}} 
+
+%End of title page configuration block
+%------------------------------------------------------------
+
+
+
+%------------------------------------------------------------
+%The next block of commands puts the table of contents at the 
+%beginning of each section and highlights the current section:
+%------------------------------------------------------------
+
+
+\begin{document}
+
+%The next statement creates the title page.
+\frame{\titlepage}
+
+
+
+
+
+\begin{frame}
+\frametitle{Классификация траекторий динамических систем}
+\begin{block}{Проблема}
+В задачах EEG трудность вызывает получение точного сигнала от головного мозга. Исследователи встречаются со следующими проблемами. Высокая чувствительность прибора к движениям и тремору, обусловленному психоэмоциональным напряжением пациента, вызывает помехи в работе, что может затруднить диагностику. 
+\end{block}
+\begin{block}{Цель}
+Целью работы является предложить метод решения восстановления источников сигнала ЭЭГ и уменьшения уровня шума в их определении.
+Предлагается использовать физико-информированный подход в восстановлении, использующийся в задачах восстановления временных рядов, вносящий априорные знания о модели для уменьшения уровня шума от данных.
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Постановка обратной задачи}
+
+\begin{block}{Дано}
+\begin{enumerate}
+    \item $\mathcal{D} = \{X_i\}_{i=1}^N$ - набор данных пространственно-временных рядов ЭЭГ, где $X_i = \chi(r, t): \mathbb{R}^(3\times1) \to \mathbb{R}^{K}$ - пространственно-временной ряд сигналов $K$.
+    \item $\mathcal{S} = \{s_i(t)\}_{i=1}^M$ - конечный набор источников сигналов. 
+\end{enumerate}
+\end{block}
+\begin{block}{Найти}
+\begin{enumerate}
+    \item $D(\hat{s}|X, \mathcal{D})$ - суперпозиция пространственно-временных рядов ЭЭГ $X_i$ по $M$ источникам
+
+    \item $G(\hat{X}(t+1)|X(t), \hat{s}, \mathcal{D})$ - восстановление пространственно-временных рядов ЭЭГ $X_i$ на основе $s$ источника
+\end{enumerate}
+\end{block}
+\begin{block}{Критерий}
+MSE - ошибка предсказаний рядов $\|\hat{X} - {X}\|_2$
+\end{block}
+\end{frame}
+
+\begin{frame}
+\frametitle{О схеме восстановления источников сигналов}
+\begin{figure}[H]
+\centerline{
+    \xymatrix{
+    \chi_i: (N_x \times N_y \times N_z \times T)  \ar@{->}[rr]^-{D(\hat{s}|X, \mathcal{D})} && s \ar@{->}[rr]^-{G(\hat{X}|X(t), \hat{s}, \mathcal{D})} && \hat{\mathbf{X}}
+    }
+}
+\caption{Метод Inverse NPDE}
+\label{fig: LNN}
+\end{figure}
+
+\begin{figure}[!tbp]
+ \centering
+ \begin{minipage}[b]{0.4\textwidth}
+     \includegraphics[width=\textwidth]{head_surface_mesh.jpg}
+     \caption{Поверхность головы $\Gamma$ }
+     \label{fig: head_surface_mesh}
+ \end{minipage}
+ \hfill
+ \begin{minipage}[b]{0.4\textwidth}
+     \includegraphics[width=\textwidth]{head_mesh.jpg}  
+     \caption{Разрез объема головы $\Omega$ }
+     \label{fig: head_surface_mesh}
+ \end{minipage}
+\end{figure}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Воостановление электромагнитных потенциалов}
+\begin{block}{Уравнения Максвелла в СГС}
+\begin{columns}[c] % [c] — для вертикального центрирования содержимого
+    \column{0.5\textwidth}
+          \begin{enumerate}
+            \item $\nabla\cdot\mathbf{A} + \frac{\varepsilon\mu}{c}\,\frac{\partial \varphi}{\partial t} = 0$
+            \item $\square\varphi = -4\pi\,\frac{\rho}{\varepsilon}$
+            \item $\square\mathbf{A} = -\frac{4\pi}{c}\,\mu\,\mathbf{j}$
+            \item $\square = \Delta -\frac{\varepsilon\mu}{c^2}\frac{\partial^2}{\partial t^2}$
+         \end{enumerate}
+    \column{0.5\textwidth}
+         \begin{figure}[!tbp]
+             \includegraphics[width=0.4\textwidth]{head_mesh.jpg}  
+             \caption{Разрез объема головы $\Omega$ }
+        \end{figure}
+  \end{columns}
+\end{block}
+
+\begin{block}{Задача nPDE}
+    Необходимо восстановить $\rho, \phi, \mathbf{A}, \mathbf{j}$
+    Моделируется нейросетью с 8 выходами. Граничное условие: $\phi|_\Gamma = 0,\mathbf{A}|_\Gamma = 0$
+\end{block}
+
+\begin{block}{Критерий}
+    $\text{Loss} = \text{BCSLoss} + \text{PDELoss} + \|\hat{X} - {X}\|_2 + R(\mathbf{w})$
+\end{block}
+\end{frame}
+
+\begin{frame}
+\frametitle{Энергия в качетсве регуляризации}
+\begin{block}{Идея}
+    \begin{enumerate}
+        \item Требуется добиться наиболее простое распределение зарядов. Обычные методы регуляризации не решают данную задачу.
+        \item Предлагается в качестве регуляризации брать энергию электрического поля
+    \end{enumerate}
+\end{block}
+\begin{block}{Подсчет энергии}
+    \begin{enumerate}
+        \item $\frac{d\mathcal{E}}{dt}(\mathbf{r}, t) = \phi(\mathbf{r}, t)$
+        \item Граничное условие $\mathcal{E}(\mathbf{r} =-\infty) = 0$
+    \end{enumerate}
+\end{block}
+\begin{block}{Критерий}
+    $\text{Loss} = \text{BCSLoss} + \text{PDELoss} + \|\hat{X} - {X}\|_2 - \mathcal{E} + \text{BCSLoss}_\mathcal{E} + \text{PDELoss}_\mathcal{E}$
+\end{block}
+\end{frame}
+
+\begin{frame}
+\frametitle{Регуляризация: связь энергии и произведения $\phi\rho$}
+\begin{block}{Лемма (о связи энергии и произведения потенциала на плотность заряда)}
+Пусть $\Omega\subset\mathbb{R}^d$ с конечным объёмом, $\phi\rho\in L^1(\Omega)$, и пусть
+$r_1,\dots,r_K\stackrel{\text{i.i.d.}}{\sim}\mu$ с плотностью $p(r)>0$ п.в.
+Пусть
+\[
+E=\int_\Omega \phi(r)\rho(r)\,dr,\qquad
+\hat E_K=\frac{1}{K}\sum_{i=1}^K \frac{\phi(r_i)\rho(r_i)}{p(r_i)}.
+\]
+Тогда $\mathbb{E}[\hat E_K]=E$ и $\hat E_K\to E$ почти наверное при $K\to\infty$.
+Если дополнительно $\phi\rho/p\in L^2(\mu)$, то
+\[
+\sqrt{K}\,(\hat E_K-E)\xrightarrow{d}\mathcal{N}(0,\sigma^2),\quad
+\sigma^2=\mathrm{Var}_\mu\!\Big(\frac{\phi\rho}{p}\Big).
+\]
+В частности, регуляризатор $\lambda E$ приближён выборочной регуляризацией $\lambda\hat E_K$ с погрешностью $O_p(1/\sqrt{K})$.
+\end{block}
+\end{frame}
+
+\begin{frame}
+\frametitle{Эксперимент 1: реальные данные (Brunton)}
+\begin{block}{Данные}
+Использованы реальные данные \texttt{brunton_uw_bio} (см. репозиторий). Сравнивались наш метод и метод Loretta.
+\end{block}
+\begin{block}{Результат}
+На датчиках MSE восстановления потенциалов у обоих методов примерно одинаковая (см. таблицу — заполните значения).
+\end{block}
+\begin{table}[ht]
+\centering
+\begin{tabular}{l c c}
+\hline
+Метод & Sensor MSE & Примечания \\
+\hline
+Наш метод & --- & \\
+Loretta & --- & \\
+\hline
+\end{tabular}
+\caption{Сравнение MSE восстановления потенциала на датчиках (заполните данные)}
+\end{table}
+\end{frame}
+
+\begin{frame}
+\frametitle{Эксперимент 2: синтетические данные}
+\begin{block}{Модель}
+Смоделирована шапочка EEG на овальной голове, дискретизация 50~Гц, 2 источника сигналов.
+\end{block}
+\begin{block}{Результат}
+Точность на датчиках — примерно одинаковая, но в глубине головы наше восстановление точнее (см. таблицу).
+\end{block}
+\begin{table}[ht]
+\centering
+\begin{tabular}{l c c c}
+\hline
+Метод & Sensor MSE & Deep MSE & Примечания \\
+\hline
+Наш метод & --- & --- & \\
+Loretta & --- & --- & \\
+\hline
+\end{tabular}
+\caption{Сравнение по датчикам и глубине (заполните данные)}
+\end{table}
+\end{frame}
+
+\begin{frame}
+\frametitle{Выводы и планы на будущее}
+\begin{enumerate}
+    \item Сравнивать методы только по MSE на датчиках нецелесообразно — лучше оценивать восстановленные источники по задачам: регрессии или классификации.
+    \item В перспективе: завершить теорию регуляризации, исследовать дополнительные регуляризаторы (не только энергия), выполнить сравнение на побочных задачах и расширить набор методов для регуляризации.
+\end{enumerate}
+\end{frame}
+
+\begin{frame}
+\frametitle{Схожие работы}
+\begin{enumerate}
+    \item Zhen Qi, Gregory M. Noetscher, Alton Miles, etc.,  Enabling electric field model of microscopically realistic brain
+\end{enumerate}
+\end{frame}
+
+\end{document}
+

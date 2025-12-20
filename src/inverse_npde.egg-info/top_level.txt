@@ -1,0 +1,2 @@
+inverse_npde
+neural_pde_solver
