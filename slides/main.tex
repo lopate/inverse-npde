@@ -113,13 +113,13 @@ MSE - ошибка предсказаний рядов $\|\hat{X} - {X}\|_2$
 \begin{figure}[!tbp]
  \centering
  \begin{minipage}[b]{0.4\textwidth}
-     \includegraphics[width=\textwidth]{head_surface_mesh.jpg}
+     \includegraphics[width=\textwidth]{../figures/head_surface_mesh.jpg}
      \caption{Поверхность головы $\Gamma$ }
      \label{fig: head_surface_mesh}
  \end{minipage}
  \hfill
  \begin{minipage}[b]{0.4\textwidth}
-     \includegraphics[width=\textwidth]{head_mesh.jpg}  
+     \includegraphics[width=\textwidth]{../figures/head_mesh.jpg}  
      \caption{Разрез объема головы $\Omega$ }
      \label{fig: head_surface_mesh}
  \end{minipage}
@@ -140,7 +140,7 @@ MSE - ошибка предсказаний рядов $\|\hat{X} - {X}\|_2$
          \end{enumerate}
     \column{0.5\textwidth}
          \begin{figure}[!tbp]
-             \includegraphics[width=0.4\textwidth]{head_mesh.jpg}  
+             \includegraphics[width=0.4\textwidth]{../figures/head_mesh.jpg}  
              \caption{Разрез объема головы $\Omega$ }
         \end{figure}
   \end{columns}
@@ -160,7 +160,7 @@ MSE - ошибка предсказаний рядов $\|\hat{X} - {X}\|_2$
 \frametitle{Энергия в качетсве регуляризации}
 \begin{block}{Идея}
     \begin{enumerate}
-        \item Требуется добиться наиболее простое распределение зарядов. Обычные методы регуляризации не решают данную задачу.
+        \item Требуется добиться разряженного распределения зарядов. Обычные методы регуляризации не решают данную задачу.
         \item Предлагается в качестве регуляризации брать энергию электрического поля
     \end{enumerate}
 \end{block}
@@ -172,6 +172,9 @@ MSE - ошибка предсказаний рядов $\|\hat{X} - {X}\|_2$
 \end{block}
 \begin{block}{Критерий}
     $\text{Loss} = \text{BCSLoss} + \text{PDELoss} + \|\hat{X} - {X}\|_2 - \mathcal{E} + \text{BCSLoss}_\mathcal{E} + \text{PDELoss}_\mathcal{E}$
+\end{block}
+\begin{block}{Недостаток}
+    Требуется интегрирование по всему объему головы, точнось интегрированя напрямую зависит от сходимости метода решения PDE.
 \end{block}
 \end{frame}
 
@@ -198,29 +201,29 @@ E=\int_\Omega \phi(r)\rho(r)\,dr,\qquad
 \begin{frame}
 \frametitle{Эксперимент 1: реальные данные (Brunton)}
 \begin{block}{Данные}
-Использованы реальные данные \texttt{brunton_uw_bio} (см. репозиторий). Сравнивались наш метод и метод Loretta.
+
 \end{block}
 \begin{block}{Результат}
-На датчиках MSE восстановления потенциалов у обоих методов примерно одинаковая (см. таблицу — заполните значения).
+Точность восстановления на датчиках незначительно отличаются для разных методов. Они уже хорошо отображают потенциалы в пространство источников.
 \end{block}
 \begin{table}[ht]
 \centering
-\begin{tabular}{l c c}
+\begin{tabular}{l c}
 \hline
-Метод & Sensor MSE & Примечания \\
+Метод & Sensor MSE \\
 \hline
-Наш метод & --- & \\
-Loretta & --- & \\
+InPDE & 0.025 \\
+Loretta & 0.028 \\
 \hline
 \end{tabular}
-\caption{Сравнение MSE восстановления потенциала на датчиках (заполните данные)}
+\caption{Сравнение средней квадратичной ошибки восстановления потенциала на датчиках}
 \end{table}
 \end{frame}
 
 \begin{frame}
 \frametitle{Эксперимент 2: синтетические данные}
 \begin{block}{Модель}
-Смоделирована шапочка EEG на овальной голове, дискретизация 50~Гц, 2 источника сигналов.
+Смоделирована шапочка EEG на овальной голове, дискретизация 50~Гц, 2 источника сигналов. Преимущество такого эксперимента по сравнению с реальными данными в том, что известны истинные источники сигналов, а также потенциалы в глубине головы.
 \end{block}
 \begin{block}{Результат}
 Точность на датчиках — примерно одинаковая, но в глубине головы наше восстановление точнее (см. таблицу).
@@ -229,13 +232,13 @@ Loretta & --- & \\
 \centering
 \begin{tabular}{l c c c}
 \hline
-Метод & Sensor MSE & Deep MSE & Примечания \\
+Метод & MSE на сенсорах & MSE в глубине головы \\
 \hline
-Наш метод & --- & --- & \\
-Loretta & --- & --- & \\
+InPDE & 0.005 & 0.02 \\
+Loretta & 0.007 & 0.1 \\
 \hline
 \end{tabular}
-\caption{Сравнение по датчикам и глубине (заполните данные)}
+\caption{Сравнение точности восстановления потенциала на датчиках и в глубине головы}
 \end{table}
 \end{frame}
 
