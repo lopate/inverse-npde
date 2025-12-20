@@ -1,5 +1,5 @@
 # Fdb version 4
-["pdflatex"] 1766215332.1102 "/home/sasha/inverse-npde/slides/main.tex" "main.pdf" "main" 1766215333.45376 2
+["pdflatex"] 1766215608.66091 "/home/sasha/inverse-npde/slides/main.tex" "main.pdf" "main" 1766215610.22624 2
   "../figures/synthetic_head_views.png" 1766213470.21576 326023 7c81e8e1bf21030492024d0032d939f4 ""
   "/etc/texmf/web2c/texmf.cnf" 1766213201.13178 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lass0500.tfm" 1766213378.88777 3344 04cc4fceacac9c26311c189d8cf8dfa8 ""
@@ -10,7 +10,7 @@
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lass1200.tfm" 1766213382.05977 3328 2be4722f1b98ee4842bc3d7c90c43abf ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lass1440.tfm" 1766213372.99577 3316 74d2bae6468930ee61fdea11798112e7 ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/latt1095.tfm" 1766213387.83177 1276 e8f51803ab84b07f08acd5c6da2228c8 ""
-  "/home/sasha/inverse-npde/slides/main.tex" 1766215330.2637 12118 44d5db237ffe9eca97cb6ee838a4bb98 ""
+  "/home/sasha/inverse-npde/slides/main.tex" 1766215608.23169 12118 44d5db237ffe9eca97cb6ee838a4bb98 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmex7.tfm" 1246382020 1004 54797486969f23fa377b128694d548df ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmex8.tfm" 1246382020 988 bdf658c3bfc2d96d3c8b02cfc1c94c20 ""
@@ -278,10 +278,10 @@
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1766213297 8214364 485d2b52162761f4f77dcbde39f44314 ""
   "head_mesh.jpg" 0 -1 0 ""
   "head_surface_mesh.jpg" 0 -1 0 ""
-  "main.aux" 1766215333.2757 2403 ea407e991bb20a597ab1efd46e1d6865 "pdflatex"
-  "main.nav" 1766215333.2797 1295 ef040a83926d85743749b42a2275f515 "pdflatex"
-  "main.out" 1766215332.7877 0 d41d8cd98f00b204e9800998ecf8427e "pdflatex"
-  "main.tex" 1766215330.2637 12118 44d5db237ffe9eca97cb6ee838a4bb98 ""
+  "main.aux" 1766215610.04369 2403 ea407e991bb20a597ab1efd46e1d6865 "pdflatex"
+  "main.nav" 1766215610.04769 1295 ef040a83926d85743749b42a2275f515 "pdflatex"
+  "main.out" 1766215609.48769 0 d41d8cd98f00b204e9800998ecf8427e "pdflatex"
+  "main.tex" 1766215608.23169 12118 44d5db237ffe9eca97cb6ee838a4bb98 ""
   (generated)
   "main.aux"
   "main.log"
