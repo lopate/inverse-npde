@@ -304,9 +304,3 @@ except ImportError as e:
 - [IJulia Documentation](https://julialang.github.io/IJulia.jl/stable/)
 - [MNE-Python Documentation](https://mne.tools/stable/index.html)
 - [NeuralPDE.jl Documentation](https://neuralpde.sciml.ai/stable/)
-
----
-
-**Автор**: Исследовательская группа  
-**Версия**: 1.0.0  
-**Дата**: 2025-12-19
