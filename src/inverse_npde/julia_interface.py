@@ -12,7 +12,8 @@ from julia_interface import EEGInverseSolver
 solver = EEGInverseSolver(
     constants={'c': 2.99e10, 'epsilon': 1.0},
     neural_config={'layers': [32, 32], 'activation': 'σ'},
-    domain={'x': [-10, 10], 'y': [-10, 10], 'z': [-10, 10], 't': [0, 1]}
+    domain={'x': [-10, 10], 'y': [-10, 10], 'z': [-10, 10], 't': [0, 1]},
+    pml_config={'enabled': True, 'pml_thickness_ratio': 0.1}
 )
 
 # Создаем измеренные точки
@@ -27,16 +28,81 @@ import logging
 import numpy as np
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
+import sys
 
 
 # Используем только современный JuliaCall
 from juliacall import Main as jl
 
 JULIA_AVAILABLE = True
-
+PATH_TO_PROJECT = Path(__file__).parent.parent.parent
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class PMLConfig:
+    """
+    Конфигурация для Perfectly Matched Layer (PML) - поглощающих граничных условий.
+
+    Параметры sigma_max, kappa_max, alpha_max могут быть:
+    - None: автоматический расчёт оптимального значения (рекомендуется)
+    - float: явное задание значения
+
+    Автоматические значения по умолчанию:
+    - sigma_max: рассчитывается по формуле: σ_max ≈ -(m+1)*c/(2*d)*ln(R)
+      где R = 0.001 (0.1% отражения), m - порядок полинома, d - толщина PML
+    - kappa_max: 2.5 (середина диапазона [2,3] для улучшения поглощения)
+    - alpha_max: 0.0 (без дополнительной дисперсии в первой реализации)
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        pml_thickness_ratio: float = 0.1,
+        polynomial_order: int = 3,
+        sigma_max: Optional[float] = None,
+        kappa_max: Optional[float] = None,
+        alpha_max: Optional[float] = None,
+    ):
+        """
+        Создаёт конфигурацию PML.
+
+        Параметры:
+        - enabled: Включить/отключить PML (по умолчанию включен)
+        - pml_thickness_ratio: Толщина PML слоя в долях от размеров домена (0-1)
+        - polynomial_order: Порядок полиномиального профиля поглощения
+        - sigma_max: Максимальное значение коэффициента поглощения
+          (None = авто: σ_max ≈ -(m+1)*c/(2*d)*ln(R), R=0.001)
+        - kappa_max: Максимальное значение коэффициента растяжения (None = авто, 2.5)
+        - alpha_max: Максимальное значение коэффициента дисперсии (None = авто, 0.0)
+        """
+        if not (0.0 < pml_thickness_ratio < 0.5):
+            raise ValueError("pml_thickness_ratio must be between 0 and 0.5")
+        if polynomial_order < 1:
+            raise ValueError("polynomial_order must be at least 1")
+        if kappa_max is not None and kappa_max < 1.0:
+            raise ValueError("kappa_max must be ≥ 1")
+        if alpha_max is not None and alpha_max < 0.0:
+            raise ValueError("alpha_max must be ≥ 0")
+
+        self.enabled = enabled
+        self.pml_thickness_ratio = pml_thickness_ratio
+        self.polynomial_order = polynomial_order
+        self.sigma_max = sigma_max
+        self.kappa_max = kappa_max
+        self.alpha_max = alpha_max
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Конвертирует в словарь для передачи в Julia."""
+        return {
+            "enabled": self.enabled,
+            "pml_thickness_ratio": self.pml_thickness_ratio,
+            "polynomial_order": self.polynomial_order,
+            "sigma_max": self.sigma_max,
+            "kappa_max": self.kappa_max,
+            "alpha_max": self.alpha_max,
+        }
 
 
 class EEGInverseSolver:
@@ -54,6 +120,7 @@ class EEGInverseSolver:
         optimization_config: Optional[Dict[str, Any]] = None,
         domain: Optional[Dict[str, List[float]]] = None,
         loss_config: Optional[Dict[str, Any]] = None,
+        pml_config: Optional[Union[Dict[str, Any], PMLConfig]] = None,
     ):
         """
         Инициализация решателя обратной задачи ЭЭГ.
@@ -63,6 +130,7 @@ class EEGInverseSolver:
             neural_config: Конфигурация нейронной сети
             optimization_config: Конфигурация оптимизации
             domain: Область определения (x, y, z, t диапазоны)
+            pml_config: Конфигурация PML (Perfectly Matched Layer)
 
         """
         if not JULIA_AVAILABLE:
@@ -81,12 +149,26 @@ class EEGInverseSolver:
         )
         self.domain = domain or self._default_domain()
         self.loss_config = loss_config or self._default_loss_config()
+        self.pml_config = self._parse_pml_config(pml_config)
 
         # Внутренние переменные
         self._results = None
         self._solver_instance = None
 
         logger.info("EEGInverseSolver инициализирован с JuliaCall")
+
+    def _parse_pml_config(
+        self, pml_config: Optional[Union[Dict[str, Any], PMLConfig]]
+    ) -> PMLConfig:
+        """Парсит конфигурацию PML."""
+        if pml_config is None:
+            return PMLConfig()
+        elif isinstance(pml_config, PMLConfig):
+            return pml_config
+        elif isinstance(pml_config, dict):
+            return PMLConfig(**pml_config)
+        else:
+            raise ValueError("pml_config must be a dict or PMLConfig instance")
 
     def _preload_critical_modules(self):
         """Предварительно загружает критические модули для избежания конфликтов."""
@@ -108,7 +190,10 @@ class EEGInverseSolver:
 
             # Используем корректную активацию среды без временной среды
             try:
-                jl.seval('import Pkg; Pkg.activate(".", shared=true)')
+                jl.seval(
+                    f'import Pkg; Pkg.activate("{PATH_TO_PROJECT}"); Pkg.instantiate();'
+                )
+                jl.seval("Pkg.status()")
                 logger.info("Julia среда активирована")
             except Exception as e:
                 logger.warning(f"Ошибка активации Julia среды: {e}")
@@ -151,12 +236,12 @@ class EEGInverseSolver:
 
             # Загружаем Julia модуль с правильным путем
             module_path = str(
-                Path(__file__).parent.parent / "neural_pde_solver" / "InverseNpde.jl"
+                PATH_TO_PROJECT / "src" / "neural_pde_solver" / "InverseNpde.jl"
             )
 
             # Добавляем путь к модулю и загружаем его
             jl.seval(
-                f'push!(LOAD_PATH, "{Path(__file__).parent.parent / "neural_pde_solver"}")'
+                f'push!(LOAD_PATH, "{PATH_TO_PROJECT / "src" / "neural_pde_solver"}")'
             )
             jl.seval("using InverseNpde")
             jl.seval("using LuxCUDA, CUDA")  # Для GPU поддержки
@@ -175,11 +260,22 @@ class EEGInverseSolver:
             "mu_0": 1.0,  # Магнитная постоянная вакуума
         }
 
-    def _default_loss_config(self) -> Dict[str, float]:
+    def _default_loss_config(self) -> Dict[str, Any]:
+        """
+        Возвращает конфигурацию функции потерь по умолчанию.
+
+        Адаптивный баланс lambda_data:
+        - alpha_data: целевое соотношение L_data/L_pde (по умолчанию 1.0)
+        - lambda_data_init: начальное значение веса данных
+        - lambda_min/lambda_max: ограничения (None = без ограничений)
+        """
         return {
             "lambda_pde": 1.0,
             "lambda_bc": 1.0,
-            "lambda_data": 10.0,
+            "lambda_data_init": 1.0,
+            "alpha_data": 1.0,
+            "lambda_min": None,
+            "lambda_max": None,
         }
 
     def _default_neural_config(self) -> Dict[str, Any]:
@@ -310,27 +406,27 @@ class EEGInverseSolver:
                                   μ₀={const_dict.get("mu_0", 1.0)})
             """)
 
-            # Создаем конфигурацию нейронной сети
+            # Создаем конфигурацию нейронной сети через seval для корректной передачи именованных аргументов
             nn_config = self.neural_config
-            neural_config_jl = jl.NeuralNetworkConfig(
-                input_dim=nn_config.get("input_dim", 4),
-                hidden_layers=nn_config.get("hidden_layers", [32, 32]),
-                output_dim=nn_config.get("output_dim", 8),
-                activation=nn_config.get("activation", "σ"),
-                use_gpu=nn_config.get("use_gpu", True),
-            )
+            hidden_layers_str = str(nn_config.get("hidden_layers", [32, 32]))
+            neural_config_jl = jl.seval(f"""
+                NeuralNetworkConfig(; input_dim={nn_config.get("input_dim", 4)}, 
+                                       hidden_layers={hidden_layers_str},
+                                       output_dim={nn_config.get("output_dim", 8)},
+                                       activation=Symbol("{nn_config.get("activation", "σ")}"),
+                                       use_gpu={str(nn_config.get("use_gpu", True)).lower()})
+            """)
 
-            # Создаем конфигурацию оптимизации
+            # Создаем конфигурацию оптимизации через seval для корректной передачи именованных аргументов
             opt_config = self.optimization_config
-            jl.seval("")
-            optimization_config_jl = jl.OptimizationConfig(
-                optimizer=opt_config.get("optimizer", "adam"),
-                learning_rate=opt_config.get("learning_rate", 0.001),
-                max_iterations=opt_config.get("max_iterations", 3000),
-                log_frequency=opt_config.get("log_frequency", 50),
-                use_tensorboard=opt_config.get("use_tensorboard", True),
-                log_directory=opt_config.get("log_directory", "logs/eeg_inverse_exp"),
-            )
+            optimization_config_jl = jl.seval(f"""
+                OptimizationConfig(; optimizer=Symbol("{opt_config.get("optimizer", "adam")}"),
+                                      learning_rate={opt_config.get("learning_rate", 0.001)},
+                                      max_iterations={opt_config.get("max_iterations", 3000)},
+                                      log_frequency={opt_config.get("log_frequency", 50)},
+                                      use_tensorboard={str(opt_config.get("use_tensorboard", True)).lower()},
+                                      log_directory="{opt_config.get("log_directory", "logs/eeg_inverse_exp")}")
+            """)
 
             # Создаем конфигурацию домена
             domain = self.domain
@@ -343,18 +439,64 @@ class EEGInverseSolver:
                     "num_points": domain.get("num_points", 100),
                 }
             )
+
+            # Создаем конфигурацию функции потерь через seval для корректной передачи именованных аргументов
             loss_config = self.loss_config
-            loss_config_jl = jl.LossFunctionConfig(
-                lambda_pde=loss_config.get("lambda_pde", 1.0),
-                lambda_bc=loss_config.get("lambda_bc", 1.0),
-                lambda_data=loss_config.get("lambda_data", 10.0),
+            # Преобразуем None в nothing для Julia
+            lambda_min_str = (
+                "nothing"
+                if loss_config.get("lambda_min") is None
+                else str(loss_config.get("lambda_min"))
             )
+            lambda_max_str = (
+                "nothing"
+                if loss_config.get("lambda_max") is None
+                else str(loss_config.get("lambda_max"))
+            )
+            loss_config_jl = jl.seval(f"""
+                LossFunctionConfig(; lambda_pde={loss_config.get("lambda_pde", 1.0)},
+                                      lambda_bc={loss_config.get("lambda_bc", 1.0)},
+                                      lambda_data_init={loss_config.get("lambda_data_init", 1.0)},
+                                      alpha_data={loss_config.get("alpha_data", 1.0)},
+                                      lambda_min={lambda_min_str},
+                                      lambda_max={lambda_max_str})
+            """)
+
+            # Создаем конфигурацию PML через seval для корректной передачи именованных аргументов
+            pml_config = self.pml_config.to_dict()
+            # Преобразуем None в nothing для Julia
+            sigma_max_str = (
+                "nothing"
+                if pml_config.get("sigma_max") is None
+                else str(pml_config.get("sigma_max"))
+            )
+            kappa_max_str = (
+                "nothing"
+                if pml_config.get("kappa_max") is None
+                else str(pml_config.get("kappa_max"))
+            )
+            alpha_max_str = (
+                "nothing"
+                if pml_config.get("alpha_max") is None
+                else str(pml_config.get("alpha_max"))
+            )
+
+            pml_config_jl = jl.seval(f"""
+                PMLConfig(; pml_thickness_ratio={pml_config.get("pml_thickness_ratio", 0.1)},
+                            polynomial_order={pml_config.get("polynomial_order", 3)},
+                            sigma_max={sigma_max_str},
+                            kappa_max={kappa_max_str},
+                            alpha_max={alpha_max_str},
+                            enabled={str(pml_config.get("enabled", True)).lower()})
+            """)
+
             return {
                 "constants": constants_jl,
                 "neural_config": neural_config_jl,
                 "optimization_config": optimization_config_jl,
                 "domain_config": domain_config_jl,
                 "loss_config": loss_config_jl,
+                "pml_config": pml_config_jl,
             }
 
         except Exception as e:
@@ -403,6 +545,7 @@ class EEGInverseSolver:
                 opt_config=configs["optimization_config"],
                 loss_config=configs["loss_config"],
                 domain_config=configs["domain_config"],
+                pml_config=configs["pml_config"],
             )
 
             # Сохраняем результаты
@@ -472,6 +615,14 @@ class EEGInverseSolver:
         num_sensors = results.results["num_sensors"]
         num_time_steps = results.results["num_time_steps"]
 
+        # Извлекаем норму
+        norm_factor = float(results.results.get("norm_factor", 1.0))
+        logger.info(f"Извлечен фактор нормировки: {norm_factor:.6f}")
+
+        # Извлекаем финальное значение lambda_data (адаптивный баланс)
+        final_lambda_data = float(results.final_lambda_data)
+        logger.info(f"Финальное lambda_data: {final_lambda_data:.6f}")
+
         # Формируем итоговые метрики
         metrics = {
             "final_loss": final_loss,
@@ -481,6 +632,7 @@ class EEGInverseSolver:
             "avg_time_mse": avg_time_mse,
             "avg_time_mae": avg_time_mae,
             "avg_time_max_error": avg_time_max_error,
+            "final_lambda_data": final_lambda_data,
         }
 
         # Возвращаем новую структуру результатов с конвертированными данными
@@ -496,11 +648,13 @@ class EEGInverseSolver:
                 "num_time_steps": num_time_steps,
             },
             "solved": True,
+            "norm_factor": norm_factor,  # Добавляем норму
             "experiment_config": {
                 "constants": self.constants,
                 "neural_config": self.neural_config,
                 "optimization_config": self.optimization_config,
                 "domain": self.domain,
+                "pml_config": self.pml_config.to_dict(),
             },
         }
 
@@ -723,6 +877,7 @@ class EEGInverseSolver:
                         "optimization_config", self.optimization_config
                     ),
                     domain=config.get("domain", self.domain),
+                    pml_config=config.get("pml_config", self.pml_config),
                 )
 
                 # Запускаем эксперимент
@@ -750,6 +905,7 @@ class EEGInverseSolver:
             "neural_config": self.neural_config,
             "optimization_config": self.optimization_config,
             "domain": self.domain,
+            "pml_config": self.pml_config.to_dict(),
             "results_available": self._results is not None,
         }
 

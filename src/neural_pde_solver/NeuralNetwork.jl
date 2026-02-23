@@ -108,26 +108,48 @@ function initialize_parameters(chain, rng::Random.AbstractRNG=Random.default_rng
 end
 
 """
-    create_output_splitter()
+    create_output_splitter(; pml_enabled::Bool=false)
 
 Создает функцию для разделения выхода нейронной сети на физические переменные:
 - φ_pred (скалярный потенциал)
 - A_pred (векторный потенциал)  
 - ρ_pred (плотность заряда)
 - j_pred (плотность тока)
+- ψ_pred (вспомогательные PML поля, если pml_enabled=true)
+
+При включённом PML выходы имеют следующий порядок:
+[φ, Ax, Ay, Az, ρ, jx, jy, jz, ψ_φx, ψ_φy, ψ_φz, ψ_Axx, ψ_Axy, ψ_Axz, ψ_Ayx, ψ_Ayy, ψ_Ayz, ψ_Azx, ψ_Azy, ψ_Azz]
 """
-function create_output_splitter()
-    function split_outputs(output)
-        # Выходы: [φ, Ax, Ay, Az, ρ, jx, jy, jz]
-        φ_pred = output[1]
-        A_pred = output[2:4]  # [Ax, Ay, Az]
-        ρ_pred = output[5]
-        j_pred = output[6:8]  # [jx, jy, jz]
-        
-        return φ_pred, A_pred, ρ_pred, j_pred
+function create_output_splitter(; pml_enabled::Bool=false)
+    if !pml_enabled
+        function split_outputs(output)
+            # Выходы без PML: [φ, Ax, Ay, Az, ρ, jx, jy, jz]
+            φ_pred = output[1]
+            A_pred = output[2:4]  # [Ax, Ay, Az]
+            ρ_pred = output[5]
+            j_pred = output[6:8]  # [jx, jy, jz]
+            
+            return φ_pred, A_pred, ρ_pred, j_pred
+        end
+        return split_outputs
+    else
+        function split_outputs_pml(output)
+            # Выходы с PML: [φ, Ax, Ay, Az, ρ, jx, jy, jz, ψ_φx, ψ_φy, ψ_φz, ψ_Axx, ψ_Axy, ψ_Axz, ψ_Ayx, ψ_Ayy, ψ_Ayz, ψ_Azx, ψ_Azy, ψ_Azz]
+            φ_pred = output[1]
+            A_pred = output[2:4]  # [Ax, Ay, Az]
+            ρ_pred = output[5]
+            j_pred = output[6:8]  # [jx, jy, jz]
+            
+            # PML ψ-поля
+            ψ_φ = output[9:11]    # [ψ_φx, ψ_φy, ψ_φz]
+            ψ_Ax = output[12:14]  # [ψ_Axx, ψ_Axy, ψ_Axz]
+            ψ_Ay = output[15:17]  # [ψ_Ayx, ψ_Ayy, ψ_Ayz]
+            ψ_Az = output[18:20]  # [ψ_Azx, ψ_Azy, ψ_Azz]
+            
+            return φ_pred, A_pred, ρ_pred, j_pred, ψ_φ, ψ_Ax, ψ_Ay, ψ_Az
+        end
+        return split_outputs_pml
     end
-    
-    return split_outputs
 end
 
 """

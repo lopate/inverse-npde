@@ -20,11 +20,14 @@ results = run_eeg_inverse_problem(nn_config, opt_config, loss_config)
 
 module InverseNpde
 
-# Импортируем все функции из файлов в подпапке
+# Подключаем PML модуль как подмодуль
+include("neural_pde_solver/PML.jl")
 include("neural_pde_solver/PDEDefinitions.jl")
 include("neural_pde_solver/NeuralNetwork.jl") 
 include("neural_pde_solver/Optimization.jl")
 include("neural_pde_solver/InverseProblem.jl")
+
+
 
 # Реэкспортируем все основные структуры и функции
 using .PDEDefinitions: PhysicalConstants
@@ -33,6 +36,7 @@ using .Optimization: OptimizationConfig, LossFunctionConfig, create_additional_l
                    create_optimization_callback, setup_optimization, create_discretization,
                    validate_optimization_config
 using .InverseProblem: DomainConfig, run_eeg_inverse_problem, get_available_devices
+using .PML: PMLConfig, default_pml_config
 
 # Экспортируем для использования вне модуля
 export PhysicalConstants
@@ -41,5 +45,6 @@ export OptimizationConfig, LossFunctionConfig, create_additional_loss,
        create_optimization_callback, setup_optimization, create_discretization,
        validate_optimization_config
 export DomainConfig, run_eeg_inverse_problem, get_available_devices
+export PMLConfig, default_pml_config
 
 end # module

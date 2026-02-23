@@ -475,12 +475,12 @@ class EEGDataGenerator:
         """
         # Источник 1: левый участок коры
         self.add_source(
-            position=[-3.0, 2.0, 1.0], amplitude=1.0, peak_time=0.3, sigma_time=0.08
+            position=[-3.0, 2.0, 1.0], amplitude=10.0, peak_time=0.3, sigma_time=0.08
         )
 
         # Источник 2: правый участок коры
         self.add_source(
-            position=[3.0, -1.0, 2.0], amplitude=0.8, peak_time=0.7, sigma_time=0.12
+            position=[3.0, -1.0, 2.0], amplitude=10.0, peak_time=0.7, sigma_time=0.12
         )
 
     def generate_measured_points(self) -> List[List[float]]:

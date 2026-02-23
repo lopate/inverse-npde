@@ -12,9 +12,10 @@ using .InverseProblem
 nn_config = NeuralNetworkConfig(; input_dim=4, hidden_layers=[32, 32], output_dim=8)
 opt_config = OptimizationConfig(; learning_rate=0.001, max_iterations=3000)
 loss_config = LossFunctionConfig(; lambda_data=10.0)
+pml_config = PMLConfig()
 
 # Запускаем эксперимент
-results = run_eeg_inverse_problem(nn_config, opt_config, loss_config)
+results = run_eeg_inverse_problem(nn_config, opt_config, loss_config, pml_config=pml_config)
 ```
 """
 
@@ -23,17 +24,44 @@ module InverseProblem
 using ..PDEDefinitions
 using ..NeuralNetwork
 using ..Optimization
+using ..PML
+using ..PML: get_output_dim
 
 using NeuralPDE, Lux, LuxCUDA, Random, ComponentArrays, CUDA
 using ModelingToolkit: @named
 using ..PDEDefinitions: PhysicalConstants, create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func 
 using ..NeuralNetwork: NeuralNetworkConfig, create_neural_network, initialize_parameters, validate_config
-using ..Optimization: OptimizationConfig, LossFunctionConfig, validate_optimization_config, create_discretization, create_optimization_callback, setup_optimization, solve
+using ..Optimization: OptimizationConfig, LossFunctionConfig, validate_optimization_config, create_discretization, create_optimization_callback, create_data_loss_raw_func, setup_optimization, solve
 using Plots
 using Statistics: mean
 using JLD2: jldopen
 using ..PDEDefinitions: create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func, PhysicalConstants
 
+"""
+    normalize_measured_points(measured_points)
+
+Нормирует значения на датчиках по среднему модулю всех измерений.
+
+Args:
+    measured_points: Массив измеренных точек [x, y, z, t, phi_measured]
+
+Returns:
+    (normalized_points, norm_factor): Нормированные точки и фактор нормировки
+"""
+function normalize_measured_points(measured_points)
+    # Извлекаем все измеренные значения φ
+    phi_values = [point[5] for point in measured_points]
+    
+    # Вычисляем норму - средний модуль всех значений
+    norm_factor = mean(abs.(phi_values))
+    
+    # Нормируем все значения
+    normalized_points = map(measured_points) do point
+        [point[1], point[2], point[3], point[4], point[5] / norm_factor]
+    end
+    
+    return normalized_points, norm_factor
+end
 
 
 # Структура конфигурации домена
@@ -52,10 +80,10 @@ end
 
 # Экспортируем основные функции
 export run_eeg_inverse_problem, create_complete_setup
-export analyze_results, save_results, load_results, DomainConfig
+export analyze_results, save_results, load_results, DomainConfig, PMLConfig
 
 """
-    create_complete_setup(; nn_config, opt_config, loss_config, domain_config)
+    create_complete_setup(; nn_config, opt_config, loss_config, domain_config, pml_config)
 
 Создает полную настройку для эксперимента обратной задачи ЭЭГ.
 """
@@ -68,10 +96,28 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
                                    "z_range" => [-10.0, 10.0],
                                    "t_range" => [0.0, 1.0],
                                    "num_points" => 100
-                               ))
+                               ),
+                               pml_config::PMLConfig=PMLConfig())
+    
+    # Нормируем измеренные точки
+    normalized_points, norm_factor = normalize_measured_points(measured_points)
+    println("✓ Данные нормированы, фактор: $(round(norm_factor, digits=6))")
+    
+    # Вычисляем правильную размерность выхода нейросети с учётом PML
+    output_dim = get_output_dim(pml_config)
+    println("✓ Размерность выхода нейросети: $output_dim (PML: $(pml_config.enabled ? "включён" : "отключён"))")
+    
+    # Обновляем конфигурацию нейросети с правильной размерностью выхода
+    nn_config_updated = NeuralNetworkConfig(;
+        input_dim=nn_config.input_dim,
+        hidden_layers=nn_config.hidden_layers,
+        output_dim=output_dim,  # Используем вычисленную размерность
+        activation=nn_config.activation,
+        use_gpu=nn_config.use_gpu
+    )
     
     # Валидация конфигураций
-    validate_config(nn_config)
+    validate_config(nn_config_updated)
     validate_optimization_config(opt_config)
     
     # Создаем физические константы
@@ -85,30 +131,34 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
     # Создаем граничные условия
     bcs = create_boundary_conditions(constants, variables, domains)
 
-    # Создаем PDE систему
-    pde_system = create_pde_system(constants, variables, bcs, domains)
+    # Создаем PDE систему с учетом PML
+    pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config)
 
-    measured_points = measured_points |> gpu_device()
-    println("✓ Используем предоставленные измеренные точки")
+    normalized_points = normalized_points |> gpu_device()
+    println("✓ Используем нормированные измеренные точки")
     
     # Обновляем loss_config с измеренными точками
     loss_config = LossFunctionConfig(; 
                 lambda_pde = loss_config.lambda_pde,
                 lambda_bc = loss_config.lambda_bc,
-                lambda_data=loss_config.lambda_data,
-                measured_points=measured_points)
+                lambda_data_init = loss_config.lambda_data_init,
+                alpha_data = loss_config.alpha_data,
+                lambda_min = loss_config.lambda_min,
+                lambda_max = loss_config.lambda_max,
+                measured_points=normalized_points)
     
     # Создаем нейронную сеть
-    chain = create_neural_network(nn_config)
-    ps = initialize_parameters(chain, Random.default_rng(), nn_config.use_gpu)
+    chain = create_neural_network(nn_config_updated)
+    ps = initialize_parameters(chain, Random.default_rng(), nn_config_updated.use_gpu)
     
     return (chain=chain, ps=ps, constants=constants, variables=variables,
             domains=domains, pde_system=pde_system, bcs=bcs, 
-            measured_points=measured_points, configs=(nn_config=nn_config, opt_config=opt_config, loss_config=loss_config))
+            measured_points=normalized_points, configs=(nn_config=nn_config_updated, opt_config=opt_config, loss_config=loss_config, domain_config=domain_config, pml_config=pml_config),
+            norm_factor=norm_factor)  # Добавляем норму в результат
 end
 
 """
-    run_eeg_inverse_problem(nn_config, opt_config, loss_config, domain_config)
+    run_eeg_inverse_problem(nn_config, opt_config, loss_config, domain_config, pml_config)
 
 Запускает полный эксперимент решения обратной задачи ЭЭГ.
 """
@@ -121,20 +171,30 @@ function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfi
                                     "z_range" => [-10.0, 10.0],
                                     "t_range" => [0.0, 1.0]
                                 ),
+                                pml_config::PMLConfig=PMLConfig(),
                                 )
     domain_config= Dict{String, Any}(domain_config)
     println("🚀 Запуск эксперимента обратной задачи ЭЭГ...")
     
+    if pml_config.enabled
+        sigma_str = pml_config.sigma_max === nothing ? "auto" : string(round(pml_config.sigma_max, digits=4))
+        kappa_str = pml_config.kappa_max === nothing ? "auto" : string(round(pml_config.kappa_max, digits=2))
+        alpha_str = pml_config.alpha_max === nothing ? "auto" : string(round(pml_config.alpha_max, digits=4))
+        println("✅ PML включен (толщина: $(round(pml_config.pml_thickness_ratio*100))%, max σ: $sigma_str, max κ: $kappa_str, max α: $alpha_str)")
+    else
+        println("⚠️ PML отключен")
+    end
+    
     # Создаем полную настройку
-    setup = create_complete_setup(; measured_points, nn_config, opt_config, loss_config, domain_config)
+    setup = create_complete_setup(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
     
     println("✓ Настройка создана")
     
-    # Создаем discretization
-    discretization = create_discretization(setup.chain, setup.ps, setup.configs.loss_config, 
-                                          setup.configs.opt_config)
+    # Создаем discretization с адаптивным весом lambda_data
+    discretization, lambda_data_ref = create_discretization(setup.chain, setup.ps, setup.configs.loss_config, 
+                                          setup.configs.opt_config, setup.configs.domain_config)
 
-    println("✓ Discretization создан")
+    println("✓ Discretization создан (адаптивный баланс: α=$(setup.configs.loss_config.alpha_data))")
     
     # Дискретизация PDE системы
     prob = discretize(setup.pde_system, discretization)
@@ -142,9 +202,13 @@ function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfi
     
     println("✓ PDE система дискретизирована")
     
-    # Создаем callback функцию
+    # Создаем функцию для вычисления "сырого" data loss (передаём phi из discretization)
+    data_loss_raw_func = create_data_loss_raw_func(setup.configs.loss_config, discretization.phi)
+    
+    # Создаем callback функцию с адаптивным балансом
     callback = create_optimization_callback(setup.configs.opt_config, discretization, 
-                                          setup.pde_system, setup.bcs, setup.domains)
+                                          setup.pde_system, setup.bcs, setup.domains,
+                                          setup.configs.loss_config, lambda_data_ref, data_loss_raw_func)
     
     # Настраиваем оптимизатор
     opt = setup_optimization(setup.configs.opt_config)
@@ -164,7 +228,8 @@ function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfi
     results = analyze_results(phi, final_params, setup, domain_config)
     
     return (solution=res, discretization=discretization, phi=phi, 
-            params=final_params, results=results, setup=setup)
+            params=final_params, results=results, setup=setup,
+            final_lambda_data=lambda_data_ref[])
 end
 
 """
@@ -178,6 +243,7 @@ function analyze_results(phi, params, setup, domain_config)
     
     # Получаем измеренные точки с датчиков
     measured_points = setup.measured_points
+    norm_factor = setup.norm_factor
     
     # Преобразуем в массивы для удобства работы
     n_points = length(measured_points)
@@ -195,16 +261,20 @@ function analyze_results(phi, params, setup, domain_config)
         # Предсказанное значение потенциала
         phi_pred = (phi([x, y, z, t], params|>cpud))[1]
         
+        # Деанормируем значения
+        phi_measured_de = phi_measured * norm_factor
+        phi_pred_de = phi_pred * norm_factor
+        
         push!(x_coords, x)
         push!(y_coords, y) 
         push!(z_coords, z)
         push!(t_coords, t)
-        push!(measured_phi, phi_measured)
-        push!(predicted_phi, phi_pred)
+        push!(measured_phi, phi_measured_de)
+        push!(predicted_phi, phi_pred_de)
     end
     
     # Группируем по временным шагам для анализа динамики
-    time_steps = unique(t_coords)
+    time_steps = collect(unique(t_coords))
     sort!(time_steps)
     
     # Словарь для хранения метрик по временным шагам
@@ -256,7 +326,7 @@ function analyze_results(phi, params, setup, domain_config)
     
     # Выбираем 5 равномерно распределенных временных шагов
     n_time_steps = length(time_steps)
-    selected_indices = round.(Int, range(1, n_time_steps, length=5))
+    selected_indices = collect(1:round(Int, n_time_steps/4):n_time_steps)
     selected_time_steps = time_steps[selected_indices]
     
     for t_step in selected_time_steps
@@ -271,7 +341,7 @@ function analyze_results(phi, params, setup, domain_config)
                 for (k, z) in enumerate(z_grid)
                     try
                         phi_val = (phi([x, y, z, t_step], params|>cpud))[1]
-                        phi_field[i, j, k] = phi_val
+                        phi_field[i, j, k] = phi_val * norm_factor  # Деанормируем
                     catch e
                         # Если произошла ошибка, заполняем нулем
                         phi_field[i, j, k] = 0.0
@@ -333,7 +403,10 @@ function analyze_results(phi, params, setup, domain_config)
         # Статистика
         "num_sensors" => length(measured_points),
         "num_time_steps" => length(time_steps),
-        "final_loss" => sum(abs2.(measured_phi .- predicted_phi))
+        "final_loss" => sum(abs2.(measured_phi .- predicted_phi)),
+        
+        # Нормирование
+        "norm_factor" => norm_factor
     )
     
     return results
@@ -549,7 +622,8 @@ function benchmark_experiment(nn_configs::Vector{NeuralNetworkConfig},
                                  "z_range" => [-10.0, 10.0],
                                  "t_range" => [0.0, 1.0],
                                  "num_points" => 100
-                             ))
+                             ),
+                             pml_config::PMLConfig=PMLConfig())
     
     results_comparison = []
     
@@ -559,7 +633,7 @@ function benchmark_experiment(nn_configs::Vector{NeuralNetworkConfig},
         try
             # Запускаем эксперимент
             exp_results = run_eeg_inverse_problem(nn_config, opt_config, 
-                                                 LossFunctionConfig(), domain_config)
+                                                 LossFunctionConfig(), domain_config, pml_config=pml_config)
             
             # Сохраняем результаты
             push!(results_comparison, (config_i=i, results=exp_results))

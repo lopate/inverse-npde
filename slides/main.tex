@@ -211,7 +211,7 @@ E=\int_\Omega \phi(r)\rho(r)\,dr,\qquad
 \centering
 \begin{tabular}{l c}
 \hline
-Метод & Sensor MSE \\
+Метод & RMSE на сенсорах\\
 \hline
 InPDE & 0.025 \\
 Loretta & 0.028 \\
@@ -233,7 +233,7 @@ Loretta & 0.028 \\
 \centering
 \begin{tabular}{l c c c}
 \hline
-Метод & MSE на сенсорах & MSE в глубине головы \\
+Метод & RMSE на сенсорах & RMSE в глубине головы \\
 \hline
 InPDE & 0.005 & 0.02 \\
 Loretta & 0.007 & 0.1 \\
@@ -249,6 +249,15 @@ Loretta & 0.007 & 0.1 \\
 \centering
 \includegraphics[width=0.8\textwidth]{../figures/synthetic_head_views.png}
 \caption{Вид синтетической головы и расположение датчиков: 3D вид (верхний левый) и проекции спереди/сверху/боковой.}
+\end{figure}
+\end{frame}
+
+\begin{frame}
+\frametitle{Шумные данные — визуализация}
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.8\textwidth]{../figures/phi_on_sensors.png}
+\caption{Предсказание на сильно зашумленных данных}
 \end{figure}
 \end{frame}
 

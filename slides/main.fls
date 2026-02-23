@@ -497,6 +497,11 @@ INPUT ../figures/synthetic_head_views.png
 INPUT ../figures/synthetic_head_views.png
 INPUT ../figures/synthetic_head_views.png
 INPUT ../figures/synthetic_head_views.png
+INPUT ../figures/phi_on_sensors.png
+INPUT ../figures/phi_on_sensors.png
+INPUT ../figures/phi_on_sensors.png
+INPUT ../figures/phi_on_sensors.png
+INPUT ../figures/phi_on_sensors.png
 OUTPUT main.nav
 OUTPUT main.toc
 OUTPUT main.snm
