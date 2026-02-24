@@ -45,24 +45,28 @@ class PMLConfig:
     """
     Конфигурация для Perfectly Matched Layer (PML) - поглощающих граничных условий.
 
-    Параметры sigma_max, kappa_max, alpha_max могут быть:
+    Новый подход PML через затухание (γ) и экранирование (α):
+    - γ(r) — динамическое затухание (вязкое трение), поглощает энергию волн
+    - α(r) — статический экранирующий член, обеспечивает экспоненциальное убывание
+
+    ВАЖНО: Используем безразмерные единицы с c = 1!
+
+    Формула для gamma_max (на основе характерной частоты):
+        γ_max = π * f_char * (m+1) * ln(1/R)
+
+    Параметры gamma_max, alpha_max могут быть:
     - None: автоматический расчёт оптимального значения (рекомендуется)
     - float: явное задание значения
-
-    Автоматические значения по умолчанию:
-    - sigma_max: рассчитывается по формуле: σ_max ≈ -(m+1)*c/(2*d)*ln(R)
-      где R = 0.001 (0.1% отражения), m - порядок полинома, d - толщина PML
-    - kappa_max: 2.5 (середина диапазона [2,3] для улучшения поглощения)
-    - alpha_max: 0.0 (без дополнительной дисперсии в первой реализации)
     """
 
     def __init__(
         self,
         enabled: bool = True,
         pml_thickness_ratio: float = 0.1,
-        polynomial_order: int = 3,
-        sigma_max: Optional[float] = None,
-        kappa_max: Optional[float] = None,
+        reflection_coefficient: float = 1e-4,
+        characteristic_frequency: float = 100.0,
+        profile_order: int = 2,
+        gamma_max: Optional[float] = None,
         alpha_max: Optional[float] = None,
     ):
         """
@@ -70,27 +74,34 @@ class PMLConfig:
 
         Параметры:
         - enabled: Включить/отключить PML (по умолчанию включен)
-        - pml_thickness_ratio: Толщина PML слоя в долях от размеров домена (0-1)
-        - polynomial_order: Порядок полиномиального профиля поглощения
-        - sigma_max: Максимальное значение коэффициента поглощения
-          (None = авто: σ_max ≈ -(m+1)*c/(2*d)*ln(R), R=0.001)
-        - kappa_max: Максимальное значение коэффициента растяжения (None = авто, 2.5)
-        - alpha_max: Максимальное значение коэффициента дисперсии (None = авто, 0.0)
+        - pml_thickness_ratio: Толщина PML слоя в долях от размеров домена (0-0.5)
+        - reflection_coefficient: Коэффициент отражения от PML (по умолчанию 1e-4 = 0.01%)
+        - characteristic_frequency: Характерная частота сигнала в Гц (для ЭЭГ ~10-100 Гц)
+        - profile_order: Порядок профиля PML (обычно 2)
+        - gamma_max: Максимальное значение коэффициента затухания
+          (None = авто: γ_max = π * f_char * (m+1) * ln(1/R))
+        - alpha_max: Максимальное значение коэффициента экранирования
+          (None = авто: α_max = (2*ln(1/R)/L)²)
         """
         if not (0.0 < pml_thickness_ratio < 0.5):
             raise ValueError("pml_thickness_ratio must be between 0 and 0.5")
-        if polynomial_order < 1:
-            raise ValueError("polynomial_order must be at least 1")
-        if kappa_max is not None and kappa_max < 1.0:
-            raise ValueError("kappa_max must be ≥ 1")
+        if not (0.0 < reflection_coefficient < 1.0):
+            raise ValueError("reflection_coefficient must be between 0 and 1")
+        if characteristic_frequency <= 0.0:
+            raise ValueError("characteristic_frequency must be > 0")
+        if profile_order < 1:
+            raise ValueError("profile_order must be >= 1")
+        if gamma_max is not None and gamma_max < 0.0:
+            raise ValueError("gamma_max must be ≥ 0")
         if alpha_max is not None and alpha_max < 0.0:
             raise ValueError("alpha_max must be ≥ 0")
 
         self.enabled = enabled
         self.pml_thickness_ratio = pml_thickness_ratio
-        self.polynomial_order = polynomial_order
-        self.sigma_max = sigma_max
-        self.kappa_max = kappa_max
+        self.reflection_coefficient = reflection_coefficient
+        self.characteristic_frequency = characteristic_frequency
+        self.profile_order = profile_order
+        self.gamma_max = gamma_max
         self.alpha_max = alpha_max
 
     def to_dict(self) -> Dict[str, Any]:
@@ -98,9 +109,10 @@ class PMLConfig:
         return {
             "enabled": self.enabled,
             "pml_thickness_ratio": self.pml_thickness_ratio,
-            "polynomial_order": self.polynomial_order,
-            "sigma_max": self.sigma_max,
-            "kappa_max": self.kappa_max,
+            "reflection_coefficient": self.reflection_coefficient,
+            "characteristic_frequency": self.characteristic_frequency,
+            "profile_order": self.profile_order,
+            "gamma_max": self.gamma_max,
             "alpha_max": self.alpha_max,
         }
 
@@ -251,9 +263,9 @@ class EEGInverseSolver:
             raise
 
     def _default_constants(self) -> Dict[str, float]:
-        """Возвращает константы по умолчанию."""
+        """Возвращает константы по умолчанию (c = 1 для безразмерных единиц)."""
         return {
-            "c": 2.99792458e10,  # Скорость света (см/с)
+            "c": 1.0,  # Безразмерная скорость (c = 1)
             "epsilon": 1.0,  # Диэлектрическая проницаемость
             "mu": 1.0,  # Магнитная проницаемость
             "epsilon_0": 1.0,  # Диэлектрическая постоянная вакуума
@@ -265,17 +277,19 @@ class EEGInverseSolver:
         Возвращает конфигурацию функции потерь по умолчанию.
 
         Адаптивный баланс lambda_data:
-        - alpha_data: целевое соотношение L_data/L_pde (по умолчанию 1.0)
         - lambda_data_init: начальное значение веса данных
         - lambda_min/lambda_max: ограничения (None = без ограничений)
+        - lambda_schedule_type: тип планировщика ("improvement" по умолчанию)
+        - lambda_schedule: словарь параметров планировщика (например window_size, patience)
         """
         return {
             "lambda_pde": 1.0,
             "lambda_bc": 1.0,
             "lambda_data_init": 1.0,
-            "alpha_data": 1.0,
             "lambda_min": None,
             "lambda_max": None,
+            "lambda_schedule_type": "improvement",
+            "lambda_schedule": {},
         }
 
     def _default_neural_config(self) -> Dict[str, Any]:
@@ -453,27 +467,40 @@ class EEGInverseSolver:
                 if loss_config.get("lambda_max") is None
                 else str(loss_config.get("lambda_max"))
             )
+
+            # Построим описание словаря lambda_schedule для передачи в Julia
+            schedule = loss_config.get("lambda_schedule", {}) or {}
+            if schedule:
+                entries = []
+                for k, v in schedule.items():
+                    if isinstance(v, str):
+                        val = f'"{v}"'
+                    elif isinstance(v, bool):
+                        val = "true" if v else "false"
+                    else:
+                        val = repr(v)
+                    entries.append(f'"{k}" => {val}')
+                schedule_jl = "Dict(" + ", ".join(entries) + ")"
+            else:
+                schedule_jl = "Dict()"
+
             loss_config_jl = jl.seval(f"""
                 LossFunctionConfig(; lambda_pde={loss_config.get("lambda_pde", 1.0)},
                                       lambda_bc={loss_config.get("lambda_bc", 1.0)},
                                       lambda_data_init={loss_config.get("lambda_data_init", 1.0)},
-                                      alpha_data={loss_config.get("alpha_data", 1.0)},
                                       lambda_min={lambda_min_str},
-                                      lambda_max={lambda_max_str})
+                                      lambda_max={lambda_max_str},
+                                      lambda_schedule_type=Symbol("{loss_config.get("lambda_schedule_type", "improvement")}"),
+                                      lambda_schedule={schedule_jl})
             """)
 
             # Создаем конфигурацию PML через seval для корректной передачи именованных аргументов
             pml_config = self.pml_config.to_dict()
             # Преобразуем None в nothing для Julia
-            sigma_max_str = (
+            gamma_max_str = (
                 "nothing"
-                if pml_config.get("sigma_max") is None
-                else str(pml_config.get("sigma_max"))
-            )
-            kappa_max_str = (
-                "nothing"
-                if pml_config.get("kappa_max") is None
-                else str(pml_config.get("kappa_max"))
+                if pml_config.get("gamma_max") is None
+                else str(pml_config.get("gamma_max"))
             )
             alpha_max_str = (
                 "nothing"
@@ -483,9 +510,10 @@ class EEGInverseSolver:
 
             pml_config_jl = jl.seval(f"""
                 PMLConfig(; pml_thickness_ratio={pml_config.get("pml_thickness_ratio", 0.1)},
-                            polynomial_order={pml_config.get("polynomial_order", 3)},
-                            sigma_max={sigma_max_str},
-                            kappa_max={kappa_max_str},
+                            reflection_coefficient={pml_config.get("reflection_coefficient", 1e-4)},
+                            characteristic_frequency={pml_config.get("characteristic_frequency", 100.0)},
+                            profile_order={pml_config.get("profile_order", 2)},
+                            gamma_max={gamma_max_str},
                             alpha_max={alpha_max_str},
                             enabled={str(pml_config.get("enabled", True)).lower()})
             """)

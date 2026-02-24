@@ -34,3 +34,6 @@ notebook>=7.0.0
 
 # Julia-Python интеграция через JuliaCall
 juliacall==0.9.31
+
+#Для логирования в TensorBoard
+tensorboard>=2.12.0

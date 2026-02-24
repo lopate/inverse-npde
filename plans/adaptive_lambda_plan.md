@@ -1,172 +1,75 @@
-# План: Адаптивный баланс lambda_data
+# План: Improvement-based scheduler для lambda_data
 
 ## Цель
 
-Реализовать автоматическую настройку веса `lambda_data` так, чтобы поддерживать соотношение:
+Внедрить event-driven (improvement-based) планировщик для `lambda_data`, который
+увеличивает вес данных, когда "сырой" data loss (L_data_raw) не улучшается
+в течение заданного `patience`, и опционально слегка уменьшает λ при улучшении.
 
-```
-L_data ≈ alpha_data * L_pde
-```
+## Алгоритм
 
-где `alpha_data` — целевое соотношение между data loss и PDE loss.
+- Поддерживать кольцевой буфер последних `window_size` значений `L_data_raw`.
+- На каждой итерации:
+  - Если `L_data_raw` < best_in_window - `min_improvement` → считаем, что есть улучшение;
+    сбрасываем счётчик `no_improve` и уменьшаем λ умножением на `decrease_factor`.
+  - Иначе увеличиваем `no_improve`.
+  - Если `no_improve` >= `patience` → увеличиваем λ умножением на `increase_factor` и
+    сбрасываем `no_improve`.
+  - Применяем ограничения `lambda_min`/`lambda_max` (с учётом как глобальных, так и
+    schedule-специфичных границ).
 
-## Математика
-
-### Формула обновления
-
-На каждой итерации:
-
-```julia
-# Вычисляем текущие потери
-L_pde = sum(pde_losses)
-L_data = data_loss / lambda_data  # "Сырое" значение без веса
-
-# Целевое значение lambda_data
-lambda_target = alpha_data * L_pde / L_data
-
-# Плавное обновление (экспоненциальное сглаживание)
-lambda_data_new = lambda_data * (lambda_target / lambda_data)^beta
-```
-
-где:
-- `beta` — скорость адаптации (0.1-0.5), меньше = плавнее
-- `alpha_data` — целевое соотношение (0.1-1.0), сколько веса давать данным относительно PDE
-
-### Защита от численной нестабильности
+## Псевдокод
 
 ```julia
-# Ограничения на lambda_data
-lambda_data_new = clamp(lambda_data_new, lambda_min, lambda_max)
-```
+# Параметры
+window_size = 10
+patience = 3
+increase_factor = 1.25
+decrease_factor = 0.99
+min_improvement = 1e-8
 
-## Архитектура
+data_buffer = fill(Inf, window_size)
+buffer_pos = 1
+no_improve = 0
 
-```mermaid
-flowchart TD
-    A[Итерация оптимизации] --> B[Вычисление L_pde]
-    A --> C[Вычисление L_data]
-    B --> D[Расчёт lambda_target]
-    C --> D
-    D --> E[Обновление lambda_data]
-    E --> F[Логирование в TensorBoard]
-    F --> G[Следующая итерация]
-```
-
-## Изменения в коде
-
-### 1. LossFunctionConfig (Optimization.jl)
-
-```julia
-struct LossFunctionConfig
-    lambda_pde::Float64
-    lambda_bc::Float64
-    lambda_data::Float64      # Начальное значение
-    alpha_data::Float64       # Целевое соотношение L_data/L_pde
-    adaptive::Bool            # Включить адаптивный баланс
-    beta::Float64             # Скорость адаптации
-    lambda_min::Float64       # Минимальное значение lambda_data
-    lambda_max::Float64       # Максимальное значение lambda_data
-    measured_points::Vector
-    
-    function LossFunctionConfig(;
-        lambda_pde=1.0,
-        lambda_bc=1.0,
-        lambda_data=10.0,
-        alpha_data=1.0,       # L_data ≈ L_pde
-        adaptive=true,
-        beta=0.1,
-        lambda_min=0.01,
-        lambda_max=10000.0,
-        measured_points=Vector{Any}[]
-    )
-        return new(lambda_pde, lambda_bc, lambda_data, alpha_data, 
-                   adaptive, beta, lambda_min, lambda_max, measured_points)
+for each iteration
+    data_buffer[buffer_pos] = L_data_raw
+    buffer_pos = buffer_pos % window_size + 1
+    best = minimum(data_buffer)
+    if L_data_raw < best - min_improvement
+        no_improve = 0
+        lambda *= decrease_factor
+    else
+        no_improve += 1
     end
+    if no_improve >= patience
+        lambda *= increase_factor
+        no_improve = 0
+    end
+    lambda = clamp(lambda, lambda_min, lambda_max)
 end
 ```
 
-### 2. Mutable состояние для lambda_data
+## Преимущества
 
-Нужна изменяемая переменная внутри callback:
+- Управляемые, локальные адаптации вместо резких глобальных пересчётов.
+- Простая интерпретируемость (`patience`, `increase_factor`).
+- Совместимость с глобальными ограничениями `lambda_min`/`lambda_max`.
 
-```julia
-function create_optimization_callback(...)
-    # Mutable состояние
-    lambda_data_ref = Ref{Float64}(loss_config.lambda_data)
-    
-    return function (p, l)
-        # ... вычисление L_pde и L_data ...
-        
-        if loss_config.adaptive
-            # Адаптивное обновление
-            L_pde = sum(pde_losses)
-            L_data_raw = data_loss / lambda_data_ref[]
-            
-            if L_data_raw > 1e-10  # Защита от деления на ноль
-                lambda_target = loss_config.alpha_data * L_pde / L_data_raw
-                lambda_data_ref[] = lambda_data_ref[] * 
-                    (lambda_target / lambda_data_ref[])^loss_config.beta
-                lambda_data_ref[] = clamp(lambda_data_ref[], 
-                    loss_config.lambda_min, loss_config.lambda_max)
-            end
-        end
-        
-        # Логирование
-        if logger !== nothing
-            log_value(logger, "Loss/L_pde", L_pde; step=iter)
-            log_value(logger, "Loss/L_data", L_data_raw; step=iter)
-            log_value(logger, "Params/lambda_data", lambda_data_ref[]; step=iter)
-        end
-    end
-end
-```
+## Параметры конфигурации
 
-### 3. Интеграция с additional_loss
+- `lambda_data_init` — начальное значение λ (используется планировщиком).
+- `lambda_schedule_type` — сейчас поддерживается `:improvement` (по умолчанию).
+- `lambda_schedule` — Dict со значениями: `window_size`, `patience`, `increase_factor`, `decrease_factor`, `min_improvement`, `lambda_min`, `lambda_max`.
 
-Проблема: `additional_loss` не имеет доступа к PDE loss.
+## Файлы для изменения (кратко)
 
-**Решение:** Передавать lambda_data через параметр `p` или использовать замыкание с Ref.
-
-```julia
-function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64})
-    function additional_loss(phi_pred_fun, θ, p_)
-        result = sum(abs2(phi_pred_fun([x, y, z, t], θ)[1] - phi)
-                    for (x, y, z, t, phi) in loss_config.measured_points) /
-                    length(loss_config.measured_points)
-        result = result * lambda_data_ref[]  # Используем текущее значение
-        return result
-    end
-    return additional_loss
-end
-```
-
-## Параметры по умолчанию
-
-| Параметр | Значение | Описание |
-|----------|----------|----------|
-| `alpha_data` | 1.0 | L_data ≈ L_pde |
-| `beta` | 0.1 | Плавное обновление |
-| `lambda_min` | 0.01 | Минимум |
-| `lambda_max` | 10000.0 | Максимум |
-| `adaptive` | true | Включить адаптацию |
-
-## Файлы для изменения
-
-1. **`src/neural_pde_solver/Optimization.jl`**
-   - Обновить `LossFunctionConfig`
-   - Изменить `create_additional_loss` для использования Ref
-   - Обновить `create_optimization_callback` для адаптации
-
-2. **`src/neural_pde_solver/InverseProblem.jl`**
-   - Передавать lambda_data_ref между функциями
-
-3. **`src/inverse_npde/julia_interface.py`**
-   - Добавить новые параметры в Python обёртку
+1. `src/neural_pde_solver/Optimization.jl` — реализовать improvement-scheduler и логирование.
+2. `src/neural_pde_solver/InverseProblem.jl` — корректно передавать `lambda_schedule` при создании `LossFunctionConfig`.
+3. `src/inverse_npde/julia_interface.py` — обновить Python обёртку для передачи `lambda_schedule`.
 
 ## Тестирование
 
-1. Запустить эксперимент с адаптивным балансом
-2. Проверить логи TensorBoard:
-   - L_pde и L_data должны быть сравнимы
-   - lambda_data должен стабилизироваться
-3. Сравнить с фиксированным lambda_data
+1. Запустить короткий эксперимент (несколько сотен итераций) с активированным планировщиком.
+2. Проверить логи TensorBoard: `Params/lambda_data`, `Params/iter_no_improve`, `Params/lambda_action`.
+3. Подтвердить, что λ увеличивается при стагнации data loss и опционально уменьшается при улучшении.

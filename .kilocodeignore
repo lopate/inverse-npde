@@ -1,0 +1,82 @@
+# Virtual environments - не нужны для анализа
+.venv/
+venv/
+ENV/
+env/
+
+# Conda environment
+.CondaPkg/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# IDE settings
+.idea/
+.vscode/
+
+# Large data files - слишком большие для контекста
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+
+# TensorBoard logs
+events.out.tfevents.*
+examples/logs/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Type checking cache
+.mypy_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*~
+
+# Large media files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+
+# Julia compiled files
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+*.jl.*.mem
+
+# Manifest files (auto-generated, large)
+Manifest.toml
+
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.blg

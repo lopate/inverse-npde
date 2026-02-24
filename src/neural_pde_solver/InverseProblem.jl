@@ -11,12 +11,17 @@ using .InverseProblem
 # Создаем конфигурации
 nn_config = NeuralNetworkConfig(; input_dim=4, hidden_layers=[32, 32], output_dim=8)
 opt_config = OptimizationConfig(; learning_rate=0.001, max_iterations=3000)
-loss_config = LossFunctionConfig(; lambda_data=10.0)
+loss_config = LossFunctionConfig(; lambda_data_init=10.0, lambda_schedule_type=:improvement)
 pml_config = PMLConfig()
 
 # Запускаем эксперимент
 results = run_eeg_inverse_problem(nn_config, opt_config, loss_config, pml_config=pml_config)
 ```
+
+Примечание: Новый подход PML через затухание (γ) и экранирование (α) не требует
+дополнительных выходов нейросети - эти коэффициенты вычисляются аналитически
+как функции координат. Размерность выхода всегда равна 8:
+[φ, Ax, Ay, Az, ρ, jx, jy, jz]
 """
 
 module InverseProblem
@@ -25,7 +30,6 @@ using ..PDEDefinitions
 using ..NeuralNetwork
 using ..Optimization
 using ..PML
-using ..PML: get_output_dim
 
 using NeuralPDE, Lux, LuxCUDA, Random, ComponentArrays, CUDA
 using ModelingToolkit: @named
@@ -86,6 +90,9 @@ export analyze_results, save_results, load_results, DomainConfig, PMLConfig
     create_complete_setup(; nn_config, opt_config, loss_config, domain_config, pml_config)
 
 Создает полную настройку для эксперимента обратной задачи ЭЭГ.
+
+Примечание: Размерность выхода нейросети всегда равна 8 (φ, Ax, Ay, Az, ρ, jx, jy, jz).
+PML через затухание и экранирование не требует дополнительных выходов.
 """
 function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig, 
                                opt_config::OptimizationConfig,
@@ -103,15 +110,15 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
     normalized_points, norm_factor = normalize_measured_points(measured_points)
     println("✓ Данные нормированы, фактор: $(round(norm_factor, digits=6))")
     
-    # Вычисляем правильную размерность выхода нейросети с учётом PML
-    output_dim = get_output_dim(pml_config)
+    # Размерность выхода всегда равна 8 (новый подход PML не требует дополнительных выходов)
+    output_dim = 8
     println("✓ Размерность выхода нейросети: $output_dim (PML: $(pml_config.enabled ? "включён" : "отключён"))")
     
     # Обновляем конфигурацию нейросети с правильной размерностью выхода
     nn_config_updated = NeuralNetworkConfig(;
         input_dim=nn_config.input_dim,
         hidden_layers=nn_config.hidden_layers,
-        output_dim=output_dim,  # Используем вычисленную размерность
+        output_dim=output_dim,  # Всегда 8
         activation=nn_config.activation,
         use_gpu=nn_config.use_gpu
     )
@@ -129,7 +136,7 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
                             domain_config["z_range"], domain_config["t_range"])
     
     # Создаем граничные условия
-    bcs = create_boundary_conditions(constants, variables, domains)
+    bcs = create_boundary_conditions(constants, variables, domains; pml_config=pml_config)
 
     # Создаем PDE систему с учетом PML
     pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config)
@@ -142,9 +149,10 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
                 lambda_pde = loss_config.lambda_pde,
                 lambda_bc = loss_config.lambda_bc,
                 lambda_data_init = loss_config.lambda_data_init,
-                alpha_data = loss_config.alpha_data,
                 lambda_min = loss_config.lambda_min,
                 lambda_max = loss_config.lambda_max,
+                lambda_schedule_type = loss_config.lambda_schedule_type,
+                lambda_schedule = loss_config.lambda_schedule,
                 measured_points=normalized_points)
     
     # Создаем нейронную сеть
@@ -177,12 +185,12 @@ function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfi
     println("🚀 Запуск эксперимента обратной задачи ЭЭГ...")
     
     if pml_config.enabled
-        sigma_str = pml_config.sigma_max === nothing ? "auto" : string(round(pml_config.sigma_max, digits=4))
-        kappa_str = pml_config.kappa_max === nothing ? "auto" : string(round(pml_config.kappa_max, digits=2))
+        gamma_str = pml_config.gamma_max === nothing ? "auto" : string(round(pml_config.gamma_max, digits=4))
         alpha_str = pml_config.alpha_max === nothing ? "auto" : string(round(pml_config.alpha_max, digits=4))
-        println("✅ PML включен (толщина: $(round(pml_config.pml_thickness_ratio*100))%, max σ: $sigma_str, max κ: $kappa_str, max α: $alpha_str)")
+        println("✅ PML включён (толщина: $(round(pml_config.pml_thickness_ratio*100))%, R: $(pml_config.reflection_coefficient))")
+        println("   γ_max: $gamma_str, α_max: $alpha_str")
     else
-        println("⚠️ PML отключен")
+        println("⚠️ PML отключён")
     end
     
     # Создаем полную настройку
@@ -194,7 +202,7 @@ function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfi
     discretization, lambda_data_ref = create_discretization(setup.chain, setup.ps, setup.configs.loss_config, 
                                           setup.configs.opt_config, setup.configs.domain_config)
 
-    println("✓ Discretization создан (адаптивный баланс: α=$(setup.configs.loss_config.alpha_data))")
+    println("✓ Discretization создан (адаптивный планировщик: $(setup.configs.loss_config.lambda_schedule_type))")
     
     # Дискретизация PDE системы
     prob = discretize(setup.pde_system, discretization)
@@ -244,33 +252,46 @@ function analyze_results(phi, params, setup, domain_config)
     # Получаем измеренные точки с датчиков
     measured_points = setup.measured_points
     norm_factor = setup.norm_factor
+    cpud = cpu_device()
     
-    # Преобразуем в массивы для удобства работы
+    # Батчированная обработка всех точек одновременно (аналогично loss функциям)
+    # ВАЖНО: Используем hcat для векторизованного стекирования вместо цикла
     n_points = length(measured_points)
-    x_coords = Float64[]
-    y_coords = Float64[]
-    z_coords = Float64[]
-    t_coords = Float64[]
-    measured_phi = Float64[]
-    predicted_phi = Float64[]
     
-    # Анализируем каждую измеренную точку
-    for point in measured_points
-        x, y, z, t, phi_measured = point
+    if n_points > 0
+        # Объединяем все точки в одну матрицу [5, N]
+        all_data = hcat(measured_points...)
         
-        # Предсказанное значение потенциала
-        phi_pred = (phi([x, y, z, t], params|>cpud))[1]
+        # Переносим на CPU и извлекаем компоненты
+        all_data_cpu = all_data isa CuArray ? (all_data |> cpud) : all_data
         
-        # Деанормируем значения
-        phi_measured_de = phi_measured * norm_factor
-        phi_pred_de = phi_pred * norm_factor
+        # [4, N] - координаты
+        coords_batch = Float64.(all_data_cpu[1:4, :])
+        # [N] - измеренные значения
+        measured_phi_norm = vec(Float64.(all_data_cpu[5, :]))
         
-        push!(x_coords, x)
-        push!(y_coords, y) 
-        push!(z_coords, z)
-        push!(t_coords, t)
-        push!(measured_phi, phi_measured_de)
-        push!(predicted_phi, phi_pred_de)
+        # Вызываем сеть один раз для всех точек
+        pred_all = phi(coords_batch, params |> cpud)
+        # Извлекаем только φ (первая строка) и переносим на CPU
+        phi_pred_norm = Float64.(vec(pred_all[1, :]) |> cpud)
+        
+        # Деанормализуем все значения сразу
+        measured_phi = measured_phi_norm .* norm_factor
+        predicted_phi = phi_pred_norm .* norm_factor
+        
+        # Извлекаем координаты
+        x_coords = vec(coords_batch[1, :])
+        y_coords = vec(coords_batch[2, :])
+        z_coords = vec(coords_batch[3, :])
+        t_coords = vec(coords_batch[4, :])
+    else
+        # Пустой случай
+        x_coords = Float64[]
+        y_coords = Float64[]
+        z_coords = Float64[]
+        t_coords = Float64[]
+        measured_phi = Float64[]
+        predicted_phi = Float64[]
     end
     
     # Группируем по временным шагам для анализа динамики
