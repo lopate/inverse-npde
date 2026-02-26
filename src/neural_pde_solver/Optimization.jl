@@ -479,13 +479,14 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
         # Объединяем MSE и derivative loss, затем умножаем на detached lambda_data
         lambda_detached = Zygote.dropgrad(lambda_data_ref[])
         #Превращаем data_loss в ограничение
-        data_constraint = data_loss_computed + alpha_data_constraint * (data_loss_computed^2) # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
+         # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
         # Это позволяет сохранять градиенты даже при больших значениях data_loss, так как экспонента будет расти, но градиент будет сохраняться.
-        total = data_constraint + lambda_time * deriv_loss
+        total = deriv_loss + lambda_time * deriv_loss
+        data_constraint = total + alpha_data_constraint * (total^2)
         result = total * lambda_detached
         
         # Записываем data loss в ref для callback (без пересчёта)
-        data_loss_ref[] = (mse=Float32(data_constraint), deriv=Float32(deriv_loss), total=Float32(total))
+        data_loss_ref[] = (data_constr=Float32(data_constraint), data_mse=Float32(data_loss_computed), deriv=Float32(deriv_loss), total=Float32(total))
         
         # === ДОБАВЛЕНО: Регуляризация энергии поля через интеграл ===
         if compute_field
@@ -785,7 +786,8 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
         end
         
         
-        L_data_raw = data_loss_ref[].mse
+        L_data_raw = data_loss_ref[].data_constr  # "сырой" data loss без веса (включая constraint)
+        data_mse = data_loss_ref[].data_mse
         deriv_loss_val = data_loss_ref[].deriv
         
         # Improvement-based scheduling: increase λ when data loss stagnates
@@ -830,6 +832,7 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
         # Логируем data loss и lambda_data
         if logger !== nothing
             log_value(logger, "Loss/L_data_raw", L_data_raw; step=iter)
+            log_value(logger, "Loss/L_data_mse", data_mse; step=iter)
             log_value(logger, "Loss/L_data_weighted", L_data_raw * lambda_data_ref[]; step=iter)
             # Log derivative loss component
             log_value(logger, "Loss/L_data_derivative", deriv_loss_val; step=iter)
@@ -865,7 +868,8 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
         set_postfix(pbar, 
                Loss = round(l, sigdigits=3), 
                PDE = round(L_pde, sigdigits=3), 
-               Data = round(L_data_raw, sigdigits=3),
+               Data_const = round(L_data_raw, sigdigits=3),
+               Data_mse = round(data_mse, sigdigits=3),
                Deriv = round(deriv_loss_val, sigdigits=3),
                E_fld = round(E_field_norm_val, sigdigits=3),
                L_fld = round(L_field_val, sigdigits=3),
