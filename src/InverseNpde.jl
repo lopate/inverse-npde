@@ -31,19 +31,22 @@ include("neural_pde_solver/InverseProblem.jl")
 
 # Реэкспортируем все основные структуры и функции
 using .PDEDefinitions: PhysicalConstants
-using .NeuralNetwork: NeuralNetworkConfig, create_neural_network
+using .NeuralNetwork: TemporalAwareNetworkConfig, NeuralNetworkConfig, create_neural_network, 
+                      create_temporal_aware_network, initialize_parameters, 
+                      initialize_temporal_aware_parameters
 using .Optimization: OptimizationConfig, LossFunctionConfig, create_additional_loss, 
                    create_optimization_callback, setup_optimization, create_discretization,
-                   validate_optimization_config
+                   validate_optimization_config, compute_field_energy_loss
 using .InverseProblem: DomainConfig, run_eeg_inverse_problem, get_available_devices
 using .PML: PMLConfig, default_pml_config
 
 # Экспортируем для использования вне модуля
 export PhysicalConstants
-export NeuralNetworkConfig, create_neural_network
+export TemporalAwareNetworkConfig, NeuralNetworkConfig, create_neural_network,
+       create_temporal_aware_network, initialize_parameters, initialize_temporal_aware_parameters
 export OptimizationConfig, LossFunctionConfig, create_additional_loss, 
        create_optimization_callback, setup_optimization, create_discretization,
-       validate_optimization_config
+       validate_optimization_config, compute_field_energy_loss
 export DomainConfig, run_eeg_inverse_problem, get_available_devices
 export PMLConfig, default_pml_config
 

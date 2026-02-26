@@ -5,7 +5,8 @@
 Включает различные архитектуры, функции активации и методы инициализации.
 
 Основные компоненты:
-- Создание нейронных сетей с различными архитектурами
+- Базовая архитектура MLP: [x,y,z,t] → Dense layers → outputs
+- Temporal-Aware архитектура: отдельные ветви для пространства и времени с Fourier features
 - Функции активации (sigmoid, tanh, relu)
 - Инициализация параметров сети
 - Настройка выходного слоя для разделения на физические переменные
@@ -21,8 +22,11 @@ using Lux, Random, ComponentArrays, CUDA
 using ..PDEDefinitions: PhysicalConstants
 
 # Экспортируем основные функции
-export NeuralNetworkConfig, create_neural_network, create_output_splitter
-export get_device_functions, initialize_parameters
+export NeuralNetworkConfig, TemporalAwareNetworkConfig
+export create_neural_network, create_temporal_aware_network
+export create_output_splitter, get_device_functions
+export initialize_parameters, initialize_temporal_aware_parameters
+export build_dense_chain, create_fourier_features
 
 # Структура конфигурации нейронной сети
 struct NeuralNetworkConfig
@@ -36,7 +40,64 @@ struct NeuralNetworkConfig
         return new(input_dim, hidden_layers, output_dim, Symbol(activation), use_gpu)
     end
 end
+"""
+    TemporalAwareNetworkConfig
 
+Конфигурация для архитектуры с разделением пространственных и временных признаков.
+
+Структура:
+- Spatial branch: обрабатывает [x, y, z] через Dense слои
+- Temporal branch: кодирует t через Fourier features и Dense слои
+- Fusion layer: объединяет пространственные и временные признаки
+- Output: финальные физические переменные
+
+Параметры:
+- spatial_hidden_layers: размеры Dense слоев для пространства (e.g., [32, 32])
+- spatial_output_dim: размерность выхода spatial branch (e.g., 32)
+- num_fourier_frequencies: количество Fourier частот (e.g., 8 → 16 признаков)
+- temporal_hidden_layers: размеры Dense слоев для времени (e.g., [16])
+- temporal_output_dim: размерность выхода temporal branch (e.g., 16)
+- fusion_hidden_layers: размеры Dense слоев после объединения (e.g., [32])
+- output_dim: финальная размерность выхода (e.g., 8)
+- activation: функция активации (Symbol)
+- use_gpu: использовать GPU
+"""
+struct TemporalAwareNetworkConfig
+    spatial_hidden_layers::Vector{Int}
+    spatial_output_dim::Int
+    
+    num_fourier_frequencies::Int
+    temporal_hidden_layers::Vector{Int}
+    temporal_output_dim::Int
+    
+    fusion_hidden_layers::Vector{Int}
+    
+    output_dim::Int
+    activation::Symbol
+    use_gpu::Bool
+    
+    function TemporalAwareNetworkConfig(;
+        spatial_hidden_layers::Vector{Int} = [32, 32],
+        spatial_output_dim::Int = 32,
+        
+        num_fourier_frequencies::Int = 8,
+        temporal_hidden_layers::Vector{Int} = [16],
+        temporal_output_dim::Int = 16,
+        
+        fusion_hidden_layers::Vector{Int} = [32],
+        
+        output_dim::Int = 8,
+        activation::Symbol = :tanh,
+        use_gpu::Bool = true
+    )
+        return new(
+            spatial_hidden_layers, spatial_output_dim,
+            num_fourier_frequencies, temporal_hidden_layers, temporal_output_dim,
+            fusion_hidden_layers,
+            output_dim, Symbol(activation), use_gpu
+        )
+    end
+end
 """
     get_activation_function(symbol)
 
@@ -59,29 +120,135 @@ function get_activation_function(symbol::Symbol)
 end
 
 """
+    build_dense_chain(input_dim::Int, hidden_layers::Vector{Int}, output_dim::Int, 
+                      activation::Symbol; use_last_activation::Bool=false)
+
+Строит цепь Dense слоёв с указанной архитектурой.
+
+Параметры:
+- input_dim: размерность входа
+- hidden_layers: вектор размеров скрытых слоёв
+- output_dim: размерность выхода
+- activation: функция активации для скрытых слоёв
+- use_last_activation: применять ли активацию к выходному слою (обычно false)
+
+Пример:
+    build_dense_chain(3, [32, 32], 16, :tanh)
+    # Dense(3→32) → tanh → Dense(32→32) → tanh → Dense(32→16)
+"""
+function build_dense_chain(
+    input_dim::Int,
+    hidden_layers::Vector{Int},
+    output_dim::Int,
+    activation::Symbol;
+    use_last_activation::Bool = false
+)
+    if input_dim <= 0 || output_dim <= 0
+        throw(ArgumentError("input_dim и output_dim должны быть положительными"))
+    end
+    
+    if any(size -> size <= 0, hidden_layers)
+        throw(ArgumentError("Размеры скрытых слоёв должны быть положительными"))
+    end
+    
+    activation_fn = get_activation_function(activation)
+    layers = []
+    
+    # Входной слой: input_dim → первый скрытый слой
+    if length(hidden_layers) > 0
+        push!(layers, Dense(input_dim, hidden_layers[1], activation_fn))
+        
+        # Промежуточные скрытые слои
+        for i in 2:length(hidden_layers)
+            push!(layers, Dense(hidden_layers[i-1], hidden_layers[i], activation_fn))
+        end
+        
+        # Выходной слой: последний скрытый → output_dim
+        if use_last_activation
+            push!(layers, Dense(hidden_layers[end], output_dim, activation_fn))
+        else
+            push!(layers, Dense(hidden_layers[end], output_dim))
+        end
+    else
+        # Если нет скрытых слоёв, прямой слой: input_dim → output_dim
+        if use_last_activation
+            push!(layers, Dense(input_dim, output_dim, activation_fn))
+        else
+            push!(layers, Dense(input_dim, output_dim))
+        end
+    end
+    
+    return Chain(layers...)
+end
+
+"""
+    create_fourier_features(t::Union{AbstractVector, AbstractMatrix}, num_frequencies::Int)
+
+Генерирует Fourier features для временной переменной t.
+
+Формула:
+    features = [sin(π·1·t), cos(π·1·t), sin(π·2·t), cos(π·2·t), ..., sin(π·k·t), cos(π·k·t)]
+
+Результат имеет размер 2*num_frequencies по размерности Fourier.
+
+Параметры:
+- t: временная переменная (скаляр, вектор или матрица; форма [...])
+- num_frequencies: количество Fourier частот (k = 1..num_frequencies)
+
+Возвращает:
+- features: Fourier кодирование времени размера 2*num_frequencies
+            (если t - скаляр: вектор [2*k]; если вектор/матрица: матрица [2*k, ...])
+"""
+function create_fourier_features(t::Union{Real, AbstractVecOrMat}, num_frequencies::Int)
+    if num_frequencies <= 0
+        throw(ArgumentError("num_frequencies должно быть положительным"))
+    end
+    
+    # Создаем Fourier features БЕЗ мутирования массивов (для совместимости с Zygote)
+    # Используем понимание списков вместо push!() чтобы избежать мутирования
+    if t isa Real
+        # Если t скаляр, результат - вектор [2*num_frequencies]
+        features = [sin(π * k * t) for k in 1:num_frequencies]
+        features = vcat(
+            features,
+            [cos(π * k * t) for k in 1:num_frequencies]
+        )
+        return features
+    else
+        # Если t - вектор/матрица, результат - матрица [2*num_frequencies, ...]
+        # Создаем все sin features и cos features без мутирования
+        sin_features = [sin.(π .* k .* t) for k in 1:num_frequencies]
+        cos_features = [cos.(π .* k .* t) for k in 1:num_frequencies]
+        
+        if ndims(t) == 1
+            # t - вектор: reshape каждый в строку и собрать матрицу
+            sin_rows = [reshape(f, 1, :) for f in sin_features]
+            cos_rows = [reshape(f, 1, :) for f in cos_features]
+            return vcat(sin_rows..., cos_rows...)
+        else
+            # t - матрица или более высокая размерность
+            return vcat(sin_features..., cos_features...)
+        end
+    end
+end
+
+"""
     create_neural_network(config::NeuralNetworkConfig)
 
-Создает нейронную сеть согласно конфигурации.
+Создает стандартную нейронную сеть согласно конфигурации.
+Простая MLP архитектура: [x,y,z,t] → Dense layers → output
 """
 function create_neural_network(config::NeuralNetworkConfig)
     activation_fn = get_activation_function(config.activation)
     
-    # Создаем слои сети
-    layers = []
-    
-    # Входной слой
-    push!(layers, Dense(config.input_dim, config.hidden_layers[1], activation_fn))
-    
-    # Скрытые слои
-    for i in 2:length(config.hidden_layers)
-        push!(layers, Dense(config.hidden_layers[i-1], config.hidden_layers[i], activation_fn))
-    end
-    
-    # Выходной слой
-    push!(layers, Dense(config.hidden_layers[end], config.output_dim))
-    
-    # Создаем цепь
-    chain = Chain(layers...)
+    # Используем build_dense_chain для создания сети
+    chain = build_dense_chain(
+        config.input_dim,
+        config.hidden_layers,
+        config.output_dim,
+        config.activation;
+        use_last_activation = false
+    )
     
     # Настраиваем устройство
     if config.use_gpu && CUDA.functional()
@@ -91,17 +258,143 @@ function create_neural_network(config::NeuralNetworkConfig)
     return chain
 end
 
+
+
+"""
+    create_temporal_aware_network(config::TemporalAwareNetworkConfig; rng=Random.default_rng())
+
+Создает нейронную сеть с Temporal-Aware архитектурой как правильный Lux слой.
+
+Архитектура:
+1. Spatial branch: [x, y, z] → Dense layers → spatial_features
+2. Temporal branch: [t] → Fourier features (2*num_fourier_frequencies) → Dense layers → temporal_features
+3. Fusion: concat[spatial_features, temporal_features] → Dense layers → [output_dim]
+
+Входные данные: [x, y, z, t] размер (4,) или (4, N) для батча
+Выходные данные: [φ, Ax, Ay, Az, ρ, jx, jy, jz] размер (8,) или (8, N)
+
+Это разделение гарантирует явную зависимость от времени через Fourier features.
+"""
+function create_temporal_aware_network(config::TemporalAwareNetworkConfig; rng=Random.default_rng())
+    # === BUILD COMPONENT LAYERS ===
+    
+    # Spatial branch: [x, y, z] → spatial_output_dim
+    spatial_branch = build_dense_chain(
+        3,
+        config.spatial_hidden_layers,
+        config.spatial_output_dim,
+        config.activation;
+        use_last_activation = true
+    )
+    
+    # Temporal branch: 2*num_fourier_frequencies → temporal_output_dim
+    fourier_input_dim = 2 * config.num_fourier_frequencies
+    temporal_branch = build_dense_chain(
+        fourier_input_dim,
+        config.temporal_hidden_layers,
+        config.temporal_output_dim,
+        config.activation;
+        use_last_activation = true
+    )
+    
+    # Fusion layers: (spatial_output_dim + temporal_output_dim) → output_dim
+    fusion_input_dim = config.spatial_output_dim + config.temporal_output_dim
+    fusion_layers = build_dense_chain(
+        fusion_input_dim,
+        config.fusion_hidden_layers,
+        config.output_dim,
+        config.activation;
+        use_last_activation = false
+    )
+    
+    # === CREATE LUX @COMPACT LAYER ===
+    # Используем @compact макрос для создания правильного Lux слоя
+    num_fourier_frequencies = config.num_fourier_frequencies
+    
+    return @compact(
+        ;
+        spatial_branch=spatial_branch,
+        temporal_branch=temporal_branch,
+        fusion_layers=fusion_layers,
+        num_fourier_frequencies=num_fourier_frequencies
+    ) do x
+        # Запоминаем была ли входная точка 1D
+        is_single_point = ndims(x) == 1
+        
+        # Разделяем входные данные на пространственную и временную части
+        if is_single_point
+            # Одна точка: (4,)
+            spatial_input = x[1:3]      # [x, y, z]
+            t_val = x[4:4]              # [t]
+        else
+            # Батч: (4, N)
+            spatial_input = x[1:3, :]   # [x, y, z] (3, N)
+            t_val = vec(x[4, :])        # [t] (N,)
+        end
+        
+        # === SPATIAL BRANCH ===
+        spatial_feat = spatial_branch(spatial_input)
+        
+        # === FOURIER FEATURES ===
+        fourier_features = create_fourier_features(t_val, num_fourier_frequencies)
+        
+        # === TEMPORAL BRANCH ===
+        temporal_feat = temporal_branch(fourier_features)
+        
+        # === FUSION ===
+        fusion_input = vcat(spatial_feat, temporal_feat)
+        output = fusion_layers(fusion_input)
+        
+        # Возвращаем в исходной размерности
+        @return if is_single_point
+            vec(output)  # Преобразуем (8, 1) в (8,)
+        else
+            output  # Оставляем (8, N) как есть
+        end
+    end
+end
+
 """
     initialize_parameters(chain, rng, use_gpu)
 
-Инициализирует параметры нейронной сети.
+Инициализирует параметры нейронной сети (обычной MLP).
 """
-function initialize_parameters(chain, rng::Random.AbstractRNG=Random.default_rng(), use_gpu::Bool=true)
+function initialize_parameters(chain, rng::Random.AbstractRNG=Random.default_rng(); use_gpu::Bool=true)
     ps = Lux.setup(rng, chain)[1]
     
     # Преобразуем в ComponentArray и перемещаем на нужное устройство
     ps = ps |> ComponentArray
     
+    if use_gpu && CUDA.functional()
+        ps = ps |> gpu_device() .|> Float32
+    else
+        ps = ps .|> Float32
+    end
+    
+    return ps
+end
+
+"""
+    initialize_temporal_aware_parameters(network, rng::Random.AbstractRNG=Random.default_rng(), use_gpu::Bool=true)
+
+Инициализирует параметры Temporal-Aware сети (@compact слой из create_temporal_aware_network).
+
+Параметры:
+- network: Lux слой из create_temporal_aware_network()
+- rng: Random Number Generator
+- use_gpu: использовать GPU
+
+Возвращает:
+- ps: ComponentArray с параметрами всех ветвей (spatial_branch, temporal_branch, fusion_layers)
+"""
+function initialize_temporal_aware_parameters(network, rng::Random.AbstractRNG=Random.default_rng(); use_gpu::Bool=true)
+    # Инициализируем параметры @compact слоя
+    ps, st = Lux.setup(rng, network)
+    
+    # Преобразуем в ComponentArray
+    ps = ps |> ComponentArray
+    
+    # Перемещаем на нужное устройство
     if use_gpu && CUDA.functional()
         ps = ps |> gpu_device() .|> Float32
     else
@@ -241,6 +534,48 @@ function validate_config(config::NeuralNetworkConfig)
     
     if any(layer -> layer <= 0, config.hidden_layers)
         throw(ArgumentError("Размеры скрытых слоев должны быть положительными"))
+    end
+    
+    valid_activations = [:σ, :tanh, :relu, :elu, :gelu]
+    if !(config.activation in valid_activations)
+        throw(ArgumentError("Неизвестная функция активации: $(config.activation)"))
+    end
+    
+    return true
+end
+
+"""
+    validate_config(config::TemporalAwareNetworkConfig)
+
+Проверяет корректность конфигурации Temporal-Aware сети.
+"""
+function validate_config(config::TemporalAwareNetworkConfig)
+    if config.spatial_output_dim <= 0
+        throw(ArgumentError("spatial_output_dim должно быть положительным"))
+    end
+    
+    if config.temporal_output_dim <= 0
+        throw(ArgumentError("temporal_output_dim должно быть положительным"))
+    end
+    
+    if config.output_dim <= 0
+        throw(ArgumentError("output_dim должно быть положительным"))
+    end
+    
+    if config.num_fourier_frequencies <= 0
+        throw(ArgumentError("num_fourier_frequencies должно быть положительным"))
+    end
+    
+    if any(layer -> layer <= 0, config.spatial_hidden_layers)
+        throw(ArgumentError("Размеры spatial скрытых слоёв должны быть положительными"))
+    end
+    
+    if any(layer -> layer <= 0, config.temporal_hidden_layers)
+        throw(ArgumentError("Размеры temporal скрытых слоёв должны быть положительными"))
+    end
+    
+    if any(layer -> layer <= 0, config.fusion_hidden_layers)
+        throw(ArgumentError("Размеры fusion скрытых слоёв должны быть положительными"))
     end
     
     valid_activations = [:σ, :tanh, :relu, :elu, :gelu]

@@ -35,7 +35,7 @@ using NeuralPDE, Lux, LuxCUDA, Random, ComponentArrays, CUDA
 using ModelingToolkit: @named
 using ..PDEDefinitions: PhysicalConstants, create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func 
 using ..NeuralNetwork: NeuralNetworkConfig, create_neural_network, initialize_parameters, validate_config
-using ..Optimization: OptimizationConfig, LossFunctionConfig, validate_optimization_config, create_discretization, create_optimization_callback, create_data_loss_raw_func, setup_optimization, solve
+using ..Optimization: OptimizationConfig, LossFunctionConfig, validate_optimization_config, create_discretization, create_optimization_callback, data_loss, derivative_loss, setup_optimization, solve
 using Plots
 using Statistics: mean
 using JLD2: jldopen
@@ -67,6 +67,20 @@ function normalize_measured_points(measured_points)
     return normalized_points, norm_factor
 end
 
+"""
+    preprocess_measured_data(measured_points::Vector{Vector{Float64}}, time_steps::Int)
+    Interpolate measured data to create continuous functions
+    Compute temporal derivatives
+"""
+function preprocess_measured_data(measured_points::Vector{Vector{Float64}}, time_steps::Int)
+    # Interpolate measured data to create continuous functions
+    interpolated_data = [CubicSplineInterpolation(1:time_steps, [point[5] for point in measured_points if point[4] == t]) for t in 1:time_steps]
+
+    # Compute temporal derivatives
+    derivatives = [diff(interpolated_data[t]) for t in 1:time_steps]
+
+    return interpolated_data, derivatives
+end
 
 # Структура конфигурации домена
 struct DomainConfig
@@ -87,14 +101,15 @@ export run_eeg_inverse_problem, create_complete_setup
 export analyze_results, save_results, load_results, DomainConfig, PMLConfig
 
 """
-    create_complete_setup(; nn_config, opt_config, loss_config, domain_config, pml_config)
+    create_complete_setup(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
 
 Создает полную настройку для эксперимента обратной задачи ЭЭГ.
+Поддерживает как стандартную MLP архитектуру, так и Temporal-Aware архитектуру.
 
-Примечание: Размерность выхода нейросети всегда равна 8 (φ, Ax, Ay, Az, ρ, jx, jy, jz).
+Размерность выхода нейросети всегда равна 8 (φ, Ax, Ay, Az, ρ, jx, jy, jz).
 PML через затухание и экранирование не требует дополнительных выходов.
 """
-function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig, 
+function create_complete_setup(; measured_points, nn_config::Union{NeuralNetworkConfig, TemporalAwareNetworkConfig},
                                opt_config::OptimizationConfig,
                                loss_config::LossFunctionConfig,
                                domain_config::Dict{String, Any}=Dict(
@@ -105,6 +120,25 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
                                    "num_points" => 100
                                ),
                                pml_config::PMLConfig=PMLConfig())
+    
+    # Делегируем на специализированные приватные функции в зависимости от типа конфигурации
+    if nn_config isa NeuralNetworkConfig
+        return _create_complete_setup_standard(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
+    else
+        return _create_complete_setup_temporal(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
+    end
+end
+
+"""
+    _create_complete_setup_standard(...)
+
+Приватная функция для создания настройки со стандартной MLP архитектурой.
+"""
+function _create_complete_setup_standard(; measured_points, nn_config::NeuralNetworkConfig, 
+                               opt_config::OptimizationConfig,
+                               loss_config::LossFunctionConfig,
+                               domain_config::Dict{String, Any},
+                               pml_config::PMLConfig)
     
     # Нормируем измеренные точки
     normalized_points, norm_factor = normalize_measured_points(measured_points)
@@ -144,15 +178,26 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
     normalized_points = normalized_points |> gpu_device()
     println("✓ Используем нормированные измеренные точки")
     
-    # Обновляем loss_config с измеренными точками
+    # Обновляем loss_config с измеренными точками и параметрами домена
     loss_config = LossFunctionConfig(; 
                 lambda_pde = loss_config.lambda_pde,
                 lambda_bc = loss_config.lambda_bc,
                 lambda_data_init = loss_config.lambda_data_init,
                 lambda_min = loss_config.lambda_min,
                 lambda_max = loss_config.lambda_max,
+                lambda_time = loss_config.lambda_time,
                 lambda_schedule_type = loss_config.lambda_schedule_type,
                 lambda_schedule = loss_config.lambda_schedule,
+                # Параметры регуляризации энергии поля
+                lambda_field = loss_config.lambda_field,
+                field_energy_scale = loss_config.field_energy_scale,
+                num_field_time_samples = loss_config.num_field_time_samples,
+                # Параметры домена - автоматически вычисляем inner_domain
+                x_range = domain_config["x_range"],
+                y_range = domain_config["y_range"],
+                z_range = domain_config["z_range"],
+                t_range = domain_config["t_range"],
+                pml_thickness_ratio = pml_config.pml_thickness_ratio,
                 measured_points=normalized_points)
     
     # Создаем нейронную сеть
@@ -166,11 +211,86 @@ function create_complete_setup(; measured_points, nn_config::NeuralNetworkConfig
 end
 
 """
+    _create_complete_setup_temporal(...)
+
+Приватная функция для создания настройки с Temporal-Aware архитектурой.
+Эта архитектура явно разделяет пространственные и временные признаки для лучшей поддержки
+нестационарных решений.
+"""
+function _create_complete_setup_temporal(; measured_points, nn_config::TemporalAwareNetworkConfig, 
+                               opt_config::OptimizationConfig,
+                               loss_config::LossFunctionConfig,
+                               domain_config::Dict{String, Any},
+                               pml_config::PMLConfig)
+    
+    # Нормируем измеренные точки
+    normalized_points, norm_factor = normalize_measured_points(measured_points)
+    println("✓ Данные нормированы, фактор: $(round(norm_factor, digits=6))")
+    
+    # Валидация конфигурации (TemporalAwareNetworkConfig структурирована корректно по определению)
+    validate_optimization_config(opt_config)
+    
+    println("✓ Temporal-Aware архитектура:")
+    println("   Spatial: [x,y,z] → $(nn_config.spatial_hidden_layers) → $(nn_config.spatial_output_dim)D")
+    println("   Temporal: Fourier($(nn_config.num_fourier_frequencies)) → $(nn_config.temporal_hidden_layers) → $(nn_config.temporal_output_dim)D")
+    println("   Fusion: $(nn_config.spatial_output_dim + nn_config.temporal_output_dim)D → $(nn_config.fusion_hidden_layers) → $(nn_config.output_dim)D")
+    
+    # Создаем физические константы
+    constants = PhysicalConstants()
+    
+    # Создаем переменные и области
+    variables = create_variables()
+    domains = create_domains(variables, domain_config["x_range"], domain_config["y_range"], 
+                            domain_config["z_range"], domain_config["t_range"])
+    
+    # Создаем граничные условия
+    bcs = create_boundary_conditions(constants, variables, domains; pml_config=pml_config)
+
+    # Создаем PDE систему с учетом PML
+    pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config)
+
+    normalized_points = normalized_points |> gpu_device()
+    println("✓ Используем нормированные измеренные точки")
+    
+    # Обновляем loss_config с измеренными точками и параметрами домена
+    loss_config = LossFunctionConfig(; 
+                lambda_pde = loss_config.lambda_pde,
+                lambda_bc = loss_config.lambda_bc,
+                lambda_data_init = loss_config.lambda_data_init,
+                lambda_min = loss_config.lambda_min,
+                lambda_max = loss_config.lambda_max,
+                lambda_time = loss_config.lambda_time,
+                lambda_schedule_type = loss_config.lambda_schedule_type,
+                lambda_schedule = loss_config.lambda_schedule,
+                # Параметры регуляризации энергии поля
+                lambda_field = loss_config.lambda_field,
+                field_energy_scale = loss_config.field_energy_scale,
+                num_field_time_samples = loss_config.num_field_time_samples,
+                # Параметры домена - автоматически вычисляем inner_domain
+                x_range = domain_config["x_range"],
+                y_range = domain_config["y_range"],
+                z_range = domain_config["z_range"],
+                t_range = domain_config["t_range"],
+                pml_thickness_ratio = pml_config.pml_thickness_ratio,
+                measured_points=normalized_points)
+    
+    # Создаем Temporal-Aware нейронную сеть
+    chain = create_temporal_aware_network(nn_config)
+    ps = initialize_temporal_aware_parameters(chain, Random.default_rng(); use_gpu=nn_config.use_gpu)
+    
+    return (chain=chain, ps=ps, constants=constants, variables=variables,
+            domains=domains, pde_system=pde_system, bcs=bcs, 
+            measured_points=normalized_points, configs=(nn_config=nn_config, opt_config=opt_config, loss_config=loss_config, domain_config=domain_config, pml_config=pml_config),
+            norm_factor=norm_factor)
+
+end
+
+"""
     run_eeg_inverse_problem(nn_config, opt_config, loss_config, domain_config, pml_config)
 
 Запускает полный эксперимент решения обратной задачи ЭЭГ.
 """
-function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfig,
+function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetworkConfig, TemporalAwareNetworkConfig},
                                 opt_config::OptimizationConfig,
                                 loss_config::LossFunctionConfig,
                                 domain_config::Dict{Any, Any}=Dict(
@@ -211,7 +331,40 @@ function run_eeg_inverse_problem(;measured_points, nn_config::NeuralNetworkConfi
     println("✓ PDE система дискретизирована")
     
     # Создаем функцию для вычисления "сырого" data loss (передаём phi из discretization)
-    data_loss_raw_func = create_data_loss_raw_func(setup.configs.loss_config, discretization.phi)
+    # data_loss возвращает (mse=mse, deriv=deriv_loss), derivative_loss возвращает отдельный loss
+    loss_config = setup.configs.loss_config
+    phi_pred_fun = discretization.phi
+    
+    # Создаём обёртку которая вычисляет (total=mse+deriv, mse=mse, deriv=deriv_loss)
+    data_loss_raw_func = let cfg = loss_config, phi = phi_pred_fun
+        function(p_vec)
+            dev = Lux.gpu_device()
+            
+            # Получаем данные из конфига
+            coords_gpu = cfg.measured_points_coords |> dev
+            values_gpu = cfg.measured_points_values |> dev
+            n_points = cfg.n_measured_points
+            
+            # Переносим параметры на GPU
+            p_gpu = p_vec |> dev
+            
+            # Вычисляем MSE
+            mse_val = data_loss(phi, p_gpu, coords_gpu, values_gpu, n_points)
+            
+            # Вычисляем derivative loss если доступны производные
+            deriv_val = Float32(0.0)
+            if length(cfg.derivatives) > 0 && size(cfg.deriv_coords, 2) > 0
+                deriv_val = derivative_loss(
+                    phi, p_gpu, 
+                    coords_gpu, values_gpu, n_points,
+                    cfg.derivatives, cfg.deriv_coords,
+                    cfg.num_sensors, cfg.num_time_steps, cfg.measured_time
+                )
+            end
+            
+            return (total=mse_val + deriv_val, mse=mse_val, deriv=deriv_val)
+        end
+    end
     
     # Создаем callback функцию с адаптивным балансом
     callback = create_optimization_callback(setup.configs.opt_config, discretization, 

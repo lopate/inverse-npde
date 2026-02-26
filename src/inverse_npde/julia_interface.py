@@ -490,6 +490,7 @@ class EEGInverseSolver:
                                       lambda_data_init={loss_config.get("lambda_data_init", 1.0)},
                                       lambda_min={lambda_min_str},
                                       lambda_max={lambda_max_str},
+                                      lambda_time={loss_config.get("lambda_time", 1.0)},
                                       lambda_schedule_type=Symbol("{loss_config.get("lambda_schedule_type", "improvement")}"),
                                       lambda_schedule={schedule_jl})
             """)
