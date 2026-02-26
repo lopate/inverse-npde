@@ -240,7 +240,7 @@ struct LossFunctionConfig
     # refs для хранения промежуточных значений лосса (избегаем пересчёта в callback)
     field_loss_ref::Ref{NamedTuple}               # Ref для E_field, E_field_normalized, L_field
     data_loss_ref::Ref{NamedTuple}                # Ref для mse, deriv_loss, total
-
+    alpha_data_constraint::Float64
     function LossFunctionConfig(; 
         lambda_pde::Float64=1.0, 
         lambda_bc::Float64=1.0, 
@@ -264,7 +264,8 @@ struct LossFunctionConfig
         # Параметры адаптивного взвешивания (GradientScaleAdaptiveLoss)
         enable_adaptive_loss::Bool=false,  # По умолчанию отключено
         adaptive_loss_reweight_every::Int=100,  # Пересчитывать веса каждые 100 итераций
-        adaptive_weight_inertia::Float64=0.9  # Инерция для сглаживания весов
+        adaptive_weight_inertia::Float64=0.9,  # Инерция для сглаживания весов
+        alpha_data_constraint::Float64=2.0  # Масштаб для превращения data_loss в ограничение
     )
         if lambda_min !== nothing && lambda_max !== nothing && lambda_min >= lambda_max
             throw(ArgumentError("lambda_min должно быть меньше lambda_max"))
@@ -422,7 +423,7 @@ struct LossFunctionConfig
                     lambda_schedule_type, lambda_schedule, lambda_time,
                     lambda_field, field_energy_scale, num_field_time_samples, inner_domain,
                     enable_adaptive_loss, adaptive_loss_reweight_every, adaptive_weight_inertia,
-                    field_loss_ref, data_loss_ref)
+                    field_loss_ref, data_loss_ref, alpha_data_constraint)
     end
 end
 
@@ -437,6 +438,7 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
     num_time_steps = loss_config.num_time_steps
     lambda_time = loss_config.lambda_time
     measured_time = loss_config.measured_time
+    alpha_data_constraint = loss_config.alpha_data_constraint
     
     # Параметры для регуляризации энергии поля
     lambda_field = loss_config.lambda_field
@@ -476,7 +478,6 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
 
         # Объединяем MSE и derivative loss, затем умножаем на detached lambda_data
         lambda_detached = Zygote.dropgrad(lambda_data_ref[])
-        alpha_data_constraint = Float32(10.0)  # Масштаб для превращения data_loss в ограничение
         #Превращаем data_loss в ограничение
         data_constraint = data_loss_computed + alpha_data_constraint * (data_loss_computed^2) # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
         # Это позволяет сохранять градиенты даже при больших значениях data_loss, так как экспонента будет расти, но градиент будет сохраняться.
