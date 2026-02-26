@@ -236,6 +236,10 @@ struct LossFunctionConfig
     enable_adaptive_loss::Bool                    # Включить адаптивное взвешивание
     adaptive_loss_reweight_every::Int             # Как часто пересчитывать веса (в итерациях)
     adaptive_weight_inertia::Float64              # Инерция для экспоненциального сглаживания весов
+    
+    # refs для хранения промежуточных значений лосса (избегаем пересчёта в callback)
+    field_loss_ref::Ref{NamedTuple}               # Ref для E_field, E_field_normalized, L_field
+    data_loss_ref::Ref{NamedTuple}                # Ref для mse, deriv_loss, total
 
     function LossFunctionConfig(; 
         lambda_pde::Float64=1.0, 
@@ -407,12 +411,18 @@ struct LossFunctionConfig
         inner_domain = ([x_inner_min, y_inner_min, z_inner_min],
                       [x_inner_max, y_inner_max, z_inner_max])
 
+        # Инициализируем Refs для хранения промежуточных значений лосса
+        # Это позволяет избежать пересчёта в callback
+        field_loss_ref = Ref{NamedTuple}((E_field=0.0f0, E_field_normalized=0.0f0, L_field=0.0f0))
+        data_loss_ref = Ref{NamedTuple}((mse=0.0f0, deriv=0.0f0, total=0.0f0))
+
         return new(lambda_pde, lambda_bc, lambda_data_init, lambda_min, lambda_max,
                    measured_points, coords, values, measured_time, n_points,
                    num_sensors, num_time_steps, derivatives, t_mid_for_deriv, deriv_coords, 
                     lambda_schedule_type, lambda_schedule, lambda_time,
                     lambda_field, field_energy_scale, num_field_time_samples, inner_domain,
-                    enable_adaptive_loss, adaptive_loss_reweight_every, adaptive_weight_inertia)
+                    enable_adaptive_loss, adaptive_loss_reweight_every, adaptive_weight_inertia,
+                    field_loss_ref, data_loss_ref)
     end
 end
 
@@ -434,6 +444,10 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
     inner_domain = loss_config.inner_domain
     num_field_time_samples = loss_config.num_field_time_samples
     
+    # refs для хранения значений лосса
+    field_loss_ref = loss_config.field_loss_ref
+    data_loss_ref = loss_config.data_loss_ref
+    
     # Проверяем, нужно ли вычислять field loss (домен не пустой)
     compute_field = lambda_field > 0 && length(inner_domain[1]) > 0
     
@@ -447,7 +461,7 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
         θ_gpu = θ |> dev
         
         # Используем функции data_loss и derivative_loss вместо дублирования кода
-        mse = data_loss(phi_pred_fun, θ_gpu, coords_gpu, values_gpu, n_points)
+        data_loss_computed = data_loss(phi_pred_fun, θ_gpu, coords_gpu, values_gpu, n_points)
         
         # Вычисляем derivative loss если доступны производные
         deriv_loss = Float32(0.0)
@@ -462,7 +476,15 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
 
         # Объединяем MSE и derivative loss, затем умножаем на detached lambda_data
         lambda_detached = Zygote.dropgrad(lambda_data_ref[])
-        result = (mse + lambda_time * deriv_loss) * lambda_detached
+        alpha_data_constraint = Float32(10.0)  # Масштаб для превращения data_loss в ограничение
+        #Превращаем data_loss в ограничение
+        data_constraint = data_loss_computed*exp(alpha_data_constraint  * data_loss_computed) # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
+        # Это позволяет сохранять градиенты даже при больших значениях data_loss, так как экспонента будет расти, но градиент будет сохраняться.
+        total = data_constraint + lambda_time * deriv_loss
+        result = total * lambda_detached
+        
+        # Записываем data loss в ref для callback (без пересчёта)
+        data_loss_ref[] = (mse=Float32(data_constraint), deriv=Float32(deriv_loss), total=Float32(total))
         
         # === ДОБАВЛЕНО: Регуляризация энергии поля через интеграл ===
         if compute_field
@@ -498,6 +520,11 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
                 
                 # Используем L_field с нормированной энергией
                 L_field = field_result.L_field
+                
+                # Записываем field loss в ref для callback (без пересчёта)
+                field_loss_ref[] = (E_field=Float32(field_result.E_field), 
+                                   E_field_normalized=Float32(field_result.E_field_normalized), 
+                                   L_field=Float32(L_field))
                 
                 # Добавляем к общему результату с весом lambda_field
                 result = result + lambda_field * L_field
@@ -627,9 +654,13 @@ function create_discretization(chain, ps, loss_config::LossFunctionConfig,
     # NeuralPDE поддерживает GradientScaleAdaptiveLoss и NonAdaptiveLoss
     if loss_config.enable_adaptive_loss
         # Используем адаптивное взвешивание с пересчётом весов
+        # Сигнатура: GradientScaleAdaptiveLoss(reweight_every::Int64; weight_change_inertia, pde_loss_weights, bc_loss_weights, additional_loss_weights)
         adaptive_loss = GradientScaleAdaptiveLoss(
-            reweight_every = loss_config.adaptive_loss_reweight_every,
-            weight_change_inertia = loss_config.adaptive_weight_inertia
+            loss_config.adaptive_loss_reweight_every;
+            weight_change_inertia = loss_config.adaptive_weight_inertia,
+            pde_loss_weights = loss_config.lambda_pde,
+            bc_loss_weights = loss_config.lambda_bc,
+            additional_loss_weights = Float32(1.0)  # Для data loss
         )
         @info "Using GradientScaleAdaptiveLoss with reweight_every=$(loss_config.adaptive_loss_reweight_every), inertia=$(loss_config.adaptive_weight_inertia)"
     else
@@ -686,8 +717,7 @@ end
 """
 function create_optimization_callback(opt_config::OptimizationConfig, discretization, pde_system, bcs, domains,
                                       loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64},
-                                      data_loss_raw_func::Function;
-                                      phi_pred_fun=nothing)  # Функция предсказания сети для вычисления field loss
+                                      data_loss_raw_func::Function)
     maxiters = opt_config.max_iterations
     
     # Создаем логгер для TensorBoard
@@ -704,12 +734,10 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
 
     # Параметры для регуляризации энергии поля
     lambda_field = loss_config.lambda_field
-    field_energy_scale = loss_config.field_energy_scale
-    inner_domain = loss_config.inner_domain
-    num_field_time_samples = loss_config.num_field_time_samples
     
-    # Проверяем, нужно ли вычислять field loss
-    compute_field = lambda_field > 0 && length(inner_domain[1]) > 0
+    # refs для чтения значений лосса (заполняются в create_additional_loss)
+    field_loss_ref = loss_config.field_loss_ref
+    data_loss_ref = loss_config.data_loss_ref
     
     # State for improvement-based lambda scheduling
     # Initialized here so the closure can mutate them across iterations
@@ -724,43 +752,8 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
     no_improve = Ref(0)
     lambda_action = Ref(0) # -1 decrease, 0 hold, 1 increase
 
-    # Создаем функцию для вычисления field energy с использованием VEGAS
-    # (только если phi_pred_fun доступна и домен не пустой)
-    field_loss_func = nothing
-    if compute_field && phi_pred_fun !== nothing
-        inner_lb, inner_ub = inner_domain
-        
-        # Функция compute_field_energy_loss сама создаёт time_points
-        # на основе measured_time и num_field_time_samples
-        measured_time = loss_config.measured_time
-        
-        field_loss_func = let lb = inner_lb, ub = inner_ub, scale = field_energy_scale, 
-                              phi_func = phi_pred_fun, m_time = measured_time, n_samples = num_field_time_samples
-            function(p_vec)
-                dev = Lux.gpu_device()
-                p_gpu = p_vec |> dev
-                
-                # Используем общую функцию compute_field_energy_loss
-                # Она автоматически выполняет:
-                # 1. Создаёт time_points на основе measured_time и num_field_time_samples
-                # 2. Monte Carlo интегрирование энергии
-                # 3. Нормировку на объём
-                # 4. Вычисление L_field = exp(-E_field_normalized / scale)
-                field_res = compute_field_energy_loss(
-                    phi_func,
-                    p_gpu,
-                    m_time,
-                    lb,
-                    ub,
-                    scale,
-                    n_samples,
-                    1000  # N_mc
-                )
-                
-                return (E_field=field_res.E_field, E_field_normalized=field_res.E_field_normalized, L_field=field_res.L_field)
-            end
-        end
-    end
+    # field_loss_func НЕ используется - читаем из refs
+    # field_loss_func = nothing
 
     return function (p, l)
         iter += 1
@@ -790,11 +783,9 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
             end
         end
         
-        # Вычисляем "сырой" data loss (без веса lambda_data)
-        data_res = data_loss_raw_func(p.u)
-        # data_res is a NamedTuple: (total, mse, deriv)
-        L_data_raw = data_res.total
-        deriv_loss_val = data_res.deriv
+        
+        L_data_raw = data_loss_ref[].mse
+        deriv_loss_val = data_loss_ref[].deriv
         
         # Improvement-based scheduling: increase λ when data loss stagnates
         if length(data_buffer) > 0
@@ -849,46 +840,35 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
             # action taken this iteration: -1 decrease, 0 hold, 1 increase
             log_value(logger, "Params/lambda_action", lambda_action[]; step=iter)
             
-            # Логируем energy field loss если доступно
-            if field_loss_func !== nothing
-                field_res = field_loss_func(p.u)
-                log_value(logger, "Loss/E_field", field_res.E_field; step=iter)
-                log_value(logger, "Loss/E_field_normalized", field_res.E_field_normalized; step=iter)
-                log_value(logger, "Loss/L_field", field_res.L_field; step=iter)
-                log_value(logger, "Loss/L_field_weighted", field_res.L_field * lambda_field; step=iter)
+            # Логируем energy field loss из ref (без пересчёта)
+            if field_loss_ref[] != nothing && haskey(field_loss_ref[], :L_field)
+                log_value(logger, "Loss/E_field", field_loss_ref[].E_field; step=iter)
+                log_value(logger, "Loss/E_field_normalized", field_loss_ref[].E_field_normalized; step=iter)
+                log_value(logger, "Loss/L_field", field_loss_ref[].L_field; step=iter)
+                log_value(logger, "Loss/L_field_weighted", field_loss_ref[].L_field * lambda_field; step=iter)
             end
         end
         
-        # Вычисляем field metrics для прогрессбара
+        # Читаем field metrics из ref (без пересчёта)
         E_field_val = 0.0f0
         E_field_norm_val = 0.0f0
         L_field_val = 0.0f0
-        if field_loss_func !== nothing
-            field_res = field_loss_func(p.u)
-            E_field_val = Float32(field_res.E_field)
-            E_field_norm_val = Float32(field_res.E_field_normalized)
-            L_field_val = Float32(field_res.L_field)
+        if field_loss_ref[] != nothing && haskey(field_loss_ref[], :L_field)
+            E_field_val = field_loss_ref[].E_field
+            E_field_norm_val = field_loss_ref[].E_field_normalized
+            L_field_val = field_loss_ref[].L_field
         end
         
-        # Обновляем прогресс бар
+        # Обновляем прогресс бар - сначала продвигаем итератор, затем устанавливаем postfix
         ProgressBars.update(pbar)
-        if field_loss_func !== nothing
-            set_postfix(pbar, 
-                   Loss = round(l, sigdigits=3), 
-                   PDE = round(L_pde, sigdigits=3), 
-                   Data = round(L_data_raw, sigdigits=3),
-                   Deriv = round(deriv_loss_val, sigdigits=3),
-                   E_fld = round(E_field_norm_val, sigdigits=3),
-                   L_fld = round(L_field_val, sigdigits=3),
-                   λ = round(lambda_data_ref[], sigdigits=2))
-        else
-            set_postfix(pbar, 
-                   Loss = round(l, sigdigits=3), 
-                   PDE = round(L_pde, sigdigits=3), 
-                   Data = round(L_data_raw, sigdigits=3),
-                   Deriv = round(deriv_loss_val, sigdigits=3),
-                   λ = round(lambda_data_ref[], sigdigits=2))
-        end
+        set_postfix(pbar, 
+               Loss = round(l, sigdigits=3), 
+               PDE = round(L_pde, sigdigits=3), 
+               Data = round(L_data_raw, sigdigits=3),
+               Deriv = round(deriv_loss_val, sigdigits=3),
+               E_fld = round(E_field_norm_val, sigdigits=3),
+               L_fld = round(L_field_val, sigdigits=3),
+               λ = round(lambda_data_ref[], sigdigits=2))
         
         return false  # Продолжаем оптимизацию
     end

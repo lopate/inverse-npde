@@ -37,7 +37,7 @@ using .NeuralNetwork: TemporalAwareNetworkConfig, NeuralNetworkConfig, create_ne
 using .Optimization: OptimizationConfig, LossFunctionConfig, create_additional_loss, 
                    create_optimization_callback, setup_optimization, create_discretization,
                    validate_optimization_config, compute_field_energy_loss
-using .InverseProblem: DomainConfig, run_eeg_inverse_problem, get_available_devices
+using .InverseProblem: DomainConfig, run_eeg_inverse_problem, get_available_devices, save_results, load_results
 using .PML: PMLConfig, default_pml_config
 
 # Экспортируем для использования вне модуля
@@ -49,5 +49,6 @@ export OptimizationConfig, LossFunctionConfig, create_additional_loss,
        validate_optimization_config, compute_field_energy_loss
 export DomainConfig, run_eeg_inverse_problem, get_available_devices
 export PMLConfig, default_pml_config
+export save_results, load_results
 
 end # module

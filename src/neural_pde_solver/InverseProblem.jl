@@ -198,6 +198,10 @@ function _create_complete_setup_standard(; measured_points, nn_config::NeuralNet
                 z_range = domain_config["z_range"],
                 t_range = domain_config["t_range"],
                 pml_thickness_ratio = pml_config.pml_thickness_ratio,
+                # Параметры адаптивного взвешивания
+                enable_adaptive_loss = loss_config.enable_adaptive_loss,
+                adaptive_loss_reweight_every = loss_config.adaptive_loss_reweight_every,
+                adaptive_weight_inertia = loss_config.adaptive_weight_inertia,
                 measured_points=normalized_points)
     
     # Создаем нейронную сеть
@@ -272,6 +276,10 @@ function _create_complete_setup_temporal(; measured_points, nn_config::TemporalA
                 z_range = domain_config["z_range"],
                 t_range = domain_config["t_range"],
                 pml_thickness_ratio = pml_config.pml_thickness_ratio,
+                # Параметры адаптивного взвешивания
+                enable_adaptive_loss = loss_config.enable_adaptive_loss,
+                adaptive_loss_reweight_every = loss_config.adaptive_loss_reweight_every,
+                adaptive_weight_inertia = loss_config.adaptive_weight_inertia,
                 measured_points=normalized_points)
     
     # Создаем Temporal-Aware нейронную сеть
@@ -369,7 +377,7 @@ function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetwor
     # Создаем callback функцию с адаптивным балансом
     callback = create_optimization_callback(setup.configs.opt_config, discretization, 
                                           setup.pde_system, setup.bcs, setup.domains,
-                                          setup.configs.loss_config, lambda_data_ref, data_loss_raw_func)
+                                          setup.configs.loss_config, lambda_data_ref, data_loss_ref, data_loss_raw_func)
     
     # Настраиваем оптимизатор
     opt = setup_optimization(setup.configs.opt_config)
@@ -593,16 +601,13 @@ end
 """
 function save_results(results, filename::String)
     # Сохраняем основные результаты
-    JLD2.jldopen(filename, "w") do file
-        file["results"] = results
-        
-        if haskey(results, "solution")
-            file["solution"] = results.solution
-        end
-        
-        if haskey(results, "params")
-            file["params"] = results.params
-        end
+    jldopen(filename, "w") do file
+        file["solution"] = results.solution
+        file["discretization"] = results.discretization
+        file["phi"] = results.phi
+        file["params"] = results.params
+        file["results"] = results.results
+        file["setup"] = results.setup
     end
     
     println("✓ Результаты сохранены в $filename")
@@ -618,12 +623,20 @@ function load_results(filename::String)
         throw(ArgumentError("Файл $filename не найден"))
     end
     
-    results = JLD2.jldopen(filename, "r") do file
-        return file["results"]
+    jldopen(filename, "r") do file
+        result = (
+            solution = haskey(file, "solution") ? file["solution"] : nothing,
+            discretization = haskey(file, "discretization") ? file["discretization"] : nothing,
+            phi = haskey(file, "phi") ? file["phi"] : nothing,
+            params = haskey(file, "params") ? file["params"] : nothing,
+            results = haskey(file, "results") ? file["results"] : nothing,
+            setup = haskey(file, "setup") ? file["setup"] : nothing,
+            final_lambda_data = haskey(file, "final_lambda_data") ? file["final_lambda_data"] : nothing,
+        )
+        
+        println("✓ Результаты загружены из $filename")
+        return result
     end
-    
-    println("✓ Результаты загружены из $filename")
-    return results
 end
 
 """
