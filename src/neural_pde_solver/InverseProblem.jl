@@ -377,7 +377,7 @@ function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetwor
     # Создаем callback функцию с адаптивным балансом
     callback = create_optimization_callback(setup.configs.opt_config, discretization, 
                                           setup.pde_system, setup.bcs, setup.domains,
-                                          setup.configs.loss_config, lambda_data_ref, data_loss_ref, data_loss_raw_func)
+                                          setup.configs.loss_config, lambda_data_ref, data_loss_raw_func)
     
     # Настраиваем оптимизатор
     opt = setup_optimization(setup.configs.opt_config)

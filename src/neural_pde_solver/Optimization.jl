@@ -478,7 +478,7 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
         lambda_detached = Zygote.dropgrad(lambda_data_ref[])
         alpha_data_constraint = Float32(10.0)  # Масштаб для превращения data_loss в ограничение
         #Превращаем data_loss в ограничение
-        data_constraint = data_loss_computed*exp(alpha_data_constraint  * data_loss_computed) # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
+        data_constraint = data_loss_computed + alpha_data_constraint * (data_loss_computed^2) # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
         # Это позволяет сохранять градиенты даже при больших значениях data_loss, так как экспонента будет расти, но градиент будет сохраняться.
         total = data_constraint + lambda_time * deriv_loss
         result = total * lambda_detached
