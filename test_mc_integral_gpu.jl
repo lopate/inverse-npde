@@ -94,8 +94,8 @@ field_energy_mc = let f = field_energy_mc_batch
 end
 
 # Параметры домена
-inner_lb = Float64[-5.0, -5.0, -5.0]
-inner_ub = Float64[5.0, 5.0, 5.0]
+inner_lb = Float32[-5.0, -5.0, -5.0]
+inner_ub = Float32[5.0, 5.0, 5.0]
 N_mc = 1000
 
 @info "Тестирование mc_integral..."

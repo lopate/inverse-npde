@@ -73,24 +73,24 @@ sigma_max = 2π * f_char * (m + 1) / 2
 **Изменения:**
 ```julia
 struct PMLConfig
-    pml_thickness_ratio::Float64
+    pml_thickness_ratio::Float32
     polynomial_order::Int
-    sigma_max::Union{Float64, Nothing}
-    kappa_max::Union{Float64, Nothing}
-    alpha_max::Union{Float64, Nothing}
-    inner_damping::Float64
+    sigma_max::Union{Float32, Nothing}
+    kappa_max::Union{Float32, Nothing}
+    alpha_max::Union{Float32, Nothing}
+    inner_damping::Float32
     enabled::Bool
-    characteristic_frequency::Union{Float64, Nothing}  # НОВОЕ ПОЛЕ
+    characteristic_frequency::Union{Float32, Nothing}  # НОВОЕ ПОЛЕ
     
     function PMLConfig(; 
-        pml_thickness_ratio::Float64 = 0.1, 
+        pml_thickness_ratio::Float32 = 0.1f0, 
         polynomial_order::Int = 3, 
-        sigma_max::Union{Float64, Nothing} = nothing, 
-        kappa_max::Union{Float64, Nothing} = nothing, 
-        alpha_max::Union{Float64, Nothing} = nothing,
-        inner_damping::Float64 = 100.0,
+        sigma_max::Union{Float32, Nothing} = nothing, 
+        kappa_max::Union{Float32, Nothing} = nothing, 
+        alpha_max::Union{Float32, Nothing} = nothing,
+        inner_damping::Float32 = 100.0f0,
         enabled::Bool = true,
-        characteristic_frequency::Union{Float64, Nothing} = nothing  # НОВЫЙ ПАРАМЕТР
+        characteristic_frequency::Union{Float32, Nothing} = nothing  # НОВЫЙ ПАРАМЕТР
     )
         # ... валидация ...
         new(pml_thickness_ratio, polynomial_order, sigma_max, kappa_max, alpha_max, 
@@ -105,7 +105,7 @@ end
 
 **Изменения:**
 ```julia
-function compute_optimal_sigma_max(pml_config, domains, c; reflection_coefficient::Float64=0.001)
+function compute_optimal_sigma_max(pml_config, domains, c; reflection_coefficient::Float32=0.001)
     # Если задана характерная частота - используем формулу для квазистатических задач
     if pml_config.characteristic_frequency !== nothing
         f_char = pml_config.characteristic_frequency

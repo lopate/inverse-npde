@@ -32,12 +32,15 @@ export build_dense_chain, create_fourier_features
 struct NeuralNetworkConfig
     input_dim::Int              # Размерность входа
     hidden_layers::Vector{Int}  # Размеры скрытых слоев
-    output_dim::Int             # Размерность выхода (8: φ, Ax, Ay, Az, ρ, jx, jy, jz)
+    output_dim::Int             # Размерность выхода (8: φ, Ax, Ay, Az, ρ, jx, jy, jz) или 24 с производными
     activation::Symbol          # Функция активации
     use_gpu::Bool               # Использовать ли GPU
+    use_derivatives::Bool      # Предсказывать ли производные (увеличивает output_dim до 24)
     
-    function NeuralNetworkConfig(;input_dim=4, hidden_layers=[32, 32], output_dim=8, activation=:σ, use_gpu=true)
-        return new(input_dim, hidden_layers, output_dim, Symbol(activation), use_gpu)
+    function NeuralNetworkConfig(;input_dim=4, hidden_layers=[32, 32], output_dim=8, activation=:σ, use_gpu=true, use_derivatives::Bool=true)
+        # Автоматически устанавливаем output_dim=24 если use_derivatives=true
+        actual_output_dim = use_derivatives ? 24 : output_dim
+        return new(input_dim, hidden_layers, actual_output_dim, Symbol(activation), use_gpu, use_derivatives)
     end
 end
 """
@@ -58,9 +61,10 @@ end
 - temporal_hidden_layers: размеры Dense слоев для времени (e.g., [16])
 - temporal_output_dim: размерность выхода temporal branch (e.g., 16)
 - fusion_hidden_layers: размеры Dense слоев после объединения (e.g., [32])
-- output_dim: финальная размерность выхода (e.g., 8)
+- output_dim: финальная размерность выхода (e.g., 8 или 24)
 - activation: функция активации (Symbol)
 - use_gpu: использовать GPU
+- use_derivatives: предсказывать ли производные (увеличивает output_dim до 24)
 """
 struct TemporalAwareNetworkConfig
     spatial_hidden_layers::Vector{Int}
@@ -75,6 +79,7 @@ struct TemporalAwareNetworkConfig
     output_dim::Int
     activation::Symbol
     use_gpu::Bool
+    use_derivatives::Bool
     
     function TemporalAwareNetworkConfig(;
         spatial_hidden_layers::Vector{Int} = [32, 32],
@@ -88,13 +93,16 @@ struct TemporalAwareNetworkConfig
         
         output_dim::Int = 8,
         activation::Symbol = :tanh,
-        use_gpu::Bool = true
+        use_gpu::Bool = true,
+        use_derivatives::Bool = true
     )
+        # Автоматически устанавливаем output_dim=24 если use_derivatives=true
+        actual_output_dim = use_derivatives ? 24 : output_dim
         return new(
             spatial_hidden_layers, spatial_output_dim,
             num_fourier_frequencies, temporal_hidden_layers, temporal_output_dim,
             fusion_hidden_layers,
-            output_dim, Symbol(activation), use_gpu
+            actual_output_dim, Symbol(activation), use_gpu, use_derivatives
         )
     end
 end
@@ -109,7 +117,10 @@ function get_activation_function(symbol::Symbol)
         :tanh => tanh,              # hyperbolic tangent  
         :relu => relu,              # rectified linear unit
         :elu => elu,                # exponential linear unit
-        :gelu => gelu               # gaussian error linear unit
+        :gelu => gelu,               # gaussian error linear unit
+        :softplus => softplus,         # softplus (гладкая версия ReLU)
+        :swish => swish,               # swish (x * sigmoid(x) - гладкая версия ReLU
+        :leakyrelu => leakyrelu         # leaky ReLU (α=0.01)
     )
     
     if !haskey(activations, symbol)
@@ -208,17 +219,17 @@ function create_fourier_features(t::Union{Real, AbstractVecOrMat}, num_frequenci
     # Используем понимание списков вместо push!() чтобы избежать мутирования
     if t isa Real
         # Если t скаляр, результат - вектор [2*num_frequencies]
-        features = [sin(π * k * t) for k in 1:num_frequencies]
+        features = [sin(Float32(π) * k * t) for k in 1:num_frequencies]
         features = vcat(
             features,
-            [cos(π * k * t) for k in 1:num_frequencies]
+            [cos(Float32(π) * k * t) for k in 1:num_frequencies]
         )
         return features
     else
         # Если t - вектор/матрица, результат - матрица [2*num_frequencies, ...]
         # Создаем все sin features и cos features без мутирования
-        sin_features = [sin.(π .* k .* t) for k in 1:num_frequencies]
-        cos_features = [cos.(π .* k .* t) for k in 1:num_frequencies]
+        sin_features = [sin.(Float32(π) .* k .* t) for k in 1:num_frequencies]
+        cos_features = [cos.(Float32(π) .* k .* t) for k in 1:num_frequencies]
         
         if ndims(t) == 1
             # t - вектор: reshape каждый в строку и собрать матрицу
@@ -405,29 +416,63 @@ function initialize_temporal_aware_parameters(network, rng::Random.AbstractRNG=R
 end
 
 """
-    create_output_splitter()
+    create_output_splitter(use_derivatives::Bool=true)
 
-Создает функцию для разделения выхода нейронной сети на физические переменные:
+Создает функцию для разделения выхода нейронной сети на физические переменные.
+
+Базовые переменные (8):
 - φ_pred (скалярный потенциал)
 - A_pred (векторный потенциал)  
 - ρ_pred (плотность заряда)
 - j_pred (плотность тока)
 
-Выходы имеют следующий порядок:
-[φ, Ax, Ay, Az, ρ, jx, jy, jz] - всего 8 значений
+Производные (16, если use_derivatives=true):
+- DφDt, DφDx, DφDy, DφDz (4 производные для φ)
+- DAxDt, DAxDx, DAxDy, DAxDz (4 производные для Ax)
+- DAyDt, DAyDx, DAyDy, DAyDz (4 производные для Ay)
+- DAzDt, DAzDx, DAzDy, DAzDz (4 производные для Az)
+
+Порядок выходов:
+- indices 1-8: [φ, Ax, Ay, Az, ρ, jx, jy, jz]
+- indices 9-12: [DφDt, DφDx, DφDy, DφDz]
+- indices 13-24: [DAxDt, DAxDx, DAxDy, DAxDz, DAyDt, DAyDx, DAyDy, DAyDz, DAzDt, DAzDx, DAzDy, DAzDz]
 
 Примечание: PML через затухание и экранирование не требует дополнительных
 выходов нейросети - коэффициенты γ и α вычисляются аналитически.
 """
-function create_output_splitter()
+function create_output_splitter(use_derivatives::Bool=true)
     function split_outputs(output)
-        # Выходы: [φ, Ax, Ay, Az, ρ, jx, jy, jz]
-        φ_pred = output[1]
-        A_pred = output[2:4]  # [Ax, Ay, Az]
-        ρ_pred = output[5]
-        j_pred = output[6:8]  # [jx, jy, jz]
-        
-        return φ_pred, A_pred, ρ_pred, j_pred
+        if use_derivatives
+            # 24 выхода: 8 базовых + 16 производных
+            φ_pred = output[1]
+            A_pred = output[2:4]  # [Ax, Ay, Az]
+            ρ_pred = output[5]
+            j_pred = output[6:8]  # [jx, jy, jz]
+            
+            # Производные φ
+            DφDt_pred = output[9]
+            DφDx_pred = output[10]
+            DφDy_pred = output[11]
+            DφDz_pred = output[12]
+            
+            # Производные A
+            DA_dt_pred = output[13:15]   # [DAxDt, DAyDt, DAzDt]
+            DA_dx_pred = output[16:18]   # [DAxDx, DAyDx, DAzDx]
+            DA_dy_pred = output[19:21]   # [DAxDy, DAyDy, DAzDy]
+            DA_dz_pred = output[22:24]   # [DAxDz, DAyDz, DAzDz]
+            
+            return (φ_pred, A_pred, ρ_pred, j_pred, 
+                    DφDt_pred, DφDx_pred, DφDy_pred, DφDz_pred,
+                    DA_dt_pred, DA_dx_pred, DA_dy_pred, DA_dz_pred)
+        else
+            # 8 выходов: только базовые переменные
+            φ_pred = output[1]
+            A_pred = output[2:4]  # [Ax, Ay, Az]
+            ρ_pred = output[5]
+            j_pred = output[6:8]  # [jx, jy, jz]
+            
+            return φ_pred, A_pred, ρ_pred, j_pred
+        end
     end
     return split_outputs
 end
@@ -450,12 +495,20 @@ end
 Вычисляет выход нейронной сети для заданных входов.
 """
 function evaluate_network(chain, params, inputs)
-    # Перемещаем входы на то же устройство, что и параметры
+    # Диагностика типов данных
+    @debug "evaluate_network: params type = $(typeof(params)), eltype = $(eltype(params))"
+    @debug "evaluate_network: inputs type = $(typeof(inputs)), eltype = $(eltype(inputs))"
+    
+    # Перемещаем входы на то же устройство, что и параметры, и конвертируем в Float32
     if CUDA.functional() && typeof(params) <: ComponentArray && CUDA.isgpu(params)
-        inputs = inputs |> gpu_device()
+        inputs = inputs |> gpu_device() |> Float32
+        @debug "evaluate_network: moved inputs to GPU as Float32"
     else
-        inputs = inputs |> cpu_device()
+        inputs = inputs |> cpu_device() |> Float32
+        @debug "evaluate_network: moved inputs to CPU as Float32"
     end
+    
+    @debug "evaluate_network: processed inputs type = $(typeof(inputs)), eltype = $(eltype(inputs))"
     
     # Вычисляем выход сети
     output, _ = chain(inputs, params)

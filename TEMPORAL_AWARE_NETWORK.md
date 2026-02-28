@@ -143,7 +143,7 @@ config = TemporalAwareNetworkConfig(
 ## Performance Notes
 
 ### Mixed-Precision Warning
-You may see warnings about mixed-precision matmul (Float32 × Float64). This is typically benign but can be resolved by ensuring all parameters are Float32:
+You may see warnings about mixed-precision matmul (Float32 × Float32). This is typically benign but can be resolved by ensuring all parameters are Float32:
 ```julia
 ps = initialize_temporal_aware_parameters(network) .|> Float32
 ```

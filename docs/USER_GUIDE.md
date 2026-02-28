@@ -394,7 +394,7 @@ pd = pyimport("pandas")
 
 # Работа с данными
 py_data = np.array([1, 2, 3, 4, 5])
-jl_data = pyconvert(Array{Float64}, py_data)
+jl_data = pyconvert(Array{Float32}, py_data)
 
 # Обратный вызов
 py_result = pycall(py_function, Py, jl_data)
@@ -422,7 +422,7 @@ py_data = pyconvert(PyArray, julia_data)
 processed_data = process_eeg_data(py_data)
 
 # Возврат в Julia
-jl_processed = pyconvert(Array{Float64}, processed_data)
+jl_processed = pyconvert(Array{Float32}, processed_data)
 ```
 
 ## Часто задаваемые вопросы
@@ -477,7 +477,7 @@ end
 
 2. **Смешанная точность**:
 ```julia
-ps = ps .|> Float32  # Вместо Float64
+ps = ps .|> Float32  # Вместо Float32
 ```
 
 3. **Батчинг данных**:

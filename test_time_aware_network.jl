@@ -94,7 +94,7 @@ opt = OptimizationOptimisers.Adam(0.001)
 
 println("Начинаем обучение...")
 # Трекинг потерь
-loss_history = Float64[]
+loss_history = Float32[]
 trained_params = params  # Значение по умолчанию - исходные параметры
 try
     # Callback для трекинга потерь

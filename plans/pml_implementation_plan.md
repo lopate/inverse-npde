@@ -101,11 +101,11 @@ export default_pml_config
 
 # Конфигурация PML - ВКЛЮЧЁН ПО УМОЛЧАНИЮ
 struct PMLConfig
-    pml_thickness_ratio::Float64  # 0.1 = 10%
+    pml_thickness_ratio::Float32  # 0.1 = 10%
     polynomial_order::Int         # m = 3
-    sigma_max::Float64
-    kappa_max::Float64
-    alpha_max::Float64
+    sigma_max::Float32
+    kappa_max::Float32
+    alpha_max::Float32
     enabled::Bool                 # true по умолчанию
 end
 

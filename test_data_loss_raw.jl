@@ -39,11 +39,11 @@ n_points_total = n_sensors * n_time_steps
 # Сетка датчиков на плоскости z=0
 sensor_x = range(-5, 5, length=n_sensors)
 sensor_y = range(-5, 5, length=n_sensors)
-sensor_z = zeros(Float64, n_sensors)
+sensor_z = zeros(Float32, n_sensors)
 time_vals = range(t_range[1], t_range[2], length=n_time_steps)
 
 # Создаём тестовые данные - простая волна
-measured_points = Vector{Float64}[]
+measured_points = Vector{Float32}[]
 for ti in 1:n_time_steps
     t = time_vals[ti]
     for si in 1:n_sensors

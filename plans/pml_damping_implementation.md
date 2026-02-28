@@ -93,19 +93,19 @@ u(x) ≈ u₀ exp(-√α · x)
 - enabled: Включён ли PML
 """
 struct PMLConfig
-    pml_thickness_ratio::Float64
-    reflection_coefficient::Float64
-    gamma_max::Union{Float64, Nothing}
-    alpha_max::Union{Float64, Nothing}
+    pml_thickness_ratio::Float32
+    reflection_coefficient::Float32
+    gamma_max::Union{Float32, Nothing}
+    alpha_max::Union{Float32, Nothing}
     enabled::Bool
 end
 
 # Конструктор по умолчанию
 PMLConfig(;
-    pml_thickness_ratio::Float64 = 0.1,
-    reflection_coefficient::Float64 = 1e-4,  # 0.01% отражения - достаточно для ЭЭГ
-    gamma_max::Union{Float64, Nothing} = nothing,
-    alpha_max::Union{Float64, Nothing} = nothing,
+    pml_thickness_ratio::Float32 = 0.1,
+    reflection_coefficient::Float32 = 1e-4,  # 0.01% отражения - достаточно для ЭЭГ
+    gamma_max::Union{Float32, Nothing} = nothing,
+    alpha_max::Union{Float32, Nothing} = nothing,
     enabled::Bool = true
 ) = PMLConfig(pml_thickness_ratio, reflection_coefficient, gamma_max, alpha_max, enabled)
 ```
@@ -116,7 +116,7 @@ PMLConfig(;
 
 ```julia
 """
-    step_indicator(x, x0) -> Float64
+    step_indicator(x, x0) -> Float32
 
 GPU-дружественная индикаторная функция.
 Возвращает 0 при x < x0, 1 при x > x0.
@@ -129,7 +129,7 @@ step_indicator(x, x0) = (sign(x - x0) + 1) * 0.5
 
 ```julia
 """
-    compute_gamma_1d(coord, pml_start, pml_thickness, gamma_max) -> Float64
+    compute_gamma_1d(coord, pml_start, pml_thickness, gamma_max) -> Float32
 
 Вычисляет коэффициент затухания γ для одной координаты.
 Работает для PML на правой границе (coord > pml_start).
@@ -148,7 +148,7 @@ end
 
 ```julia
 """
-    compute_gamma(x, y, z, domain, gamma_max) -> Float64
+    compute_gamma(x, y, z, domain, gamma_max) -> Float32
 
 Вычисляет суммарный коэффициент затухания γ(r).
 Учитывает PML со всех 6 сторон домена.
@@ -176,7 +176,7 @@ end
 
 ```julia
 """
-    compute_alpha_1d(coord, pml_start, pml_thickness, alpha_max) -> Float64
+    compute_alpha_1d(coord, pml_start, pml_thickness, alpha_max) -> Float32
 
 Вычисляет коэффициент экранирования α для одной координаты.
 """
@@ -187,7 +187,7 @@ function compute_alpha_1d(coord, pml_start, pml_thickness, alpha_max)
 end
 
 """
-    compute_alpha(x, y, z, domain, alpha_max) -> Float64
+    compute_alpha(x, y, z, domain, alpha_max) -> Float32
 
 Вычисляет суммарный коэффициент экранирования α(r).
 """
@@ -212,7 +212,7 @@ end
 
 ```julia
 """
-    compute_gamma_max(c::Float64, d::Float64, R::Float64) -> Float64
+    compute_gamma_max(c::Float32, d::Float32, R::Float32) -> Float32
 
 Вычисляет γ_max по формуле: γ_max = 6c·ln(1/R)/d
 
@@ -221,10 +221,10 @@ end
 - d: Толщина PML слоя [м]
 - R: Требуемый коэффициент отражения (например, 1e-6)
 """
-compute_gamma_max(c::Float64, d::Float64, R::Float64) = 6.0 * c * log(1.0 / R) / d
+compute_gamma_max(c::Float32, d::Float32, R::Float32) = 6.0 * c * log(1.0 / R) / d
 
 """
-    compute_alpha_max(L::Float64, R::Float64) -> Float64
+    compute_alpha_max(L::Float32, R::Float32) -> Float32
 
 Вычисляет α_max по формуле: α_max = (2·ln(1/R)/L)²
 
@@ -232,19 +232,19 @@ compute_gamma_max(c::Float64, d::Float64, R::Float64) = 6.0 * c * log(1.0 / R) /
 - L: Толщина PML слоя [м]
 - R: Требуемый коэффициент отражения
 """
-compute_alpha_max(L::Float64, R::Float64) = (2.0 * log(1.0 / R) / L)^2
+compute_alpha_max(L::Float32, R::Float32) = (2.0 * log(1.0 / R) / L)^2
 
 """
-    resolve_pml_config(config::PMLConfig, domain, c::Float64) -> NamedTuple
+    resolve_pml_config(config::PMLConfig, domain, c::Float32) -> NamedTuple
 
 Разрешает конфигурацию PML, вычисляя gamma_max и alpha_max если они не заданы.
 
 Возвращает NamedTuple с полями:
-- gamma_max::Float64
-- alpha_max::Float64
-- pml_thickness::Float64
+- gamma_max::Float32
+- alpha_max::Float32
+- pml_thickness::Float32
 """
-function resolve_pml_config(config::PMLConfig, domain, c::Float64)
+function resolve_pml_config(config::PMLConfig, domain, c::Float32)
     if !config.enabled
         return (gamma_max=0.0, alpha_max=0.0, pml_thickness=0.0)
     end

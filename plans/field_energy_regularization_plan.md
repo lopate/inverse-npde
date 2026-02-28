@@ -57,9 +57,9 @@ flowchart TB
 ```julia
 struct LossFunctionConfig
     # ... существующие поля ...
-    lambda_field::Float64              # Вес регуляризации энергии поля (default: 1.0)
+    lambda_field::Float32              # Вес регуляризации энергии поля (default: 1.0)
     num_field_samples::Int             # Количество точек для интегрирования (default: 500)
-    field_energy_scale::Float64        # Масштаб энергии для exp(-E/scale) (default: 3.0)
+    field_energy_scale::Float32        # Масштаб энергии для exp(-E/scale) (default: 3.0)
 end
 ```
 
@@ -134,7 +134,7 @@ end
 # Возвращает
 - NamedTuple: (total=L_field, E_field=..., rho_phi=..., A_j=...)
 """
-function compute_field_energy_loss(phi_pred_fun, θ, inner_points, lambda_field::Float64, energy_scale::Float64)
+function compute_field_energy_loss(phi_pred_fun, θ, inner_points, lambda_field::Float32, energy_scale::Float32)
     dev = Lux.gpu_device()
     
     # Переносим данные на GPU
@@ -183,7 +183,7 @@ end
 Модифицировать функцию [`create_additional_loss`](src/neural_pde_solver/Optimization.jl:301):
 
 ```julia
-function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64}, 
+function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float32}, 
                                domains, pml_config::PMLConfig)
     # ... существующий код ...
     

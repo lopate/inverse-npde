@@ -169,7 +169,7 @@ end
 Модифицировать функцию для обратного преобразования предсказанных значений:
 
 ```julia
-function analyze_results(phi, params, setup, domain_config, norm_factor::Float64)
+function analyze_results(phi, params, setup, domain_config, norm_factor::Float32)
     cpud = cpu_device()
     
     # Получаем измеренные точки с датчиков
@@ -177,12 +177,12 @@ function analyze_results(phi, params, setup, domain_config, norm_factor::Float64
     
     # Преобразуем в массивы для удобства работы
     n_points = length(measured_points)
-    x_coords = Float64[]
-    y_coords = Float64[]
-    z_coords = Float64[]
-    t_coords = Float64[]
-    measured_phi = Float64[]
-    predicted_phi = Float64[]
+    x_coords = Float32[]
+    y_coords = Float32[]
+    z_coords = Float32[]
+    t_coords = Float32[]
+    measured_phi = Float32[]
+    predicted_phi = Float32[]
     
     # Анализируем каждую измеренную точку
     for point in measured_points

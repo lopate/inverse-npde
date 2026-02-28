@@ -57,11 +57,11 @@
 ```julia
 mutable struct PMLConfig
     enabled::Bool              # Включить/выключить PML
-    thickness::Float64         # Толщина слоя PML (в метрах)
-    sigma_max::Float64        # Максимальная проводимость
-    kappa_max::Float64        # Максимальное растяжение κ
-    alpha_min::Float64        # Минимальный α для стабилизации
-    alpha_max::Float64        # Максимальный α
+    thickness::Float32         # Толщина слоя PML (в метрах)
+    sigma_max::Float32        # Максимальная проводимость
+    kappa_max::Float32        # Максимальное растяжение κ
+    alpha_min::Float32        # Минимальный α для стабилизации
+    alpha_max::Float32        # Максимальный α
     m::Int                    # Порядок полинома для σ (обычно 3-4)
     direction::Symbol         # :x, :y, :z, :xy, :xz, :yz, :xyz
 end

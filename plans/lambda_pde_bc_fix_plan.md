@@ -18,7 +18,7 @@ total_loss = L_pde + L_bc + L_additional
 
 **Текущий код:**
 ```julia
-function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64})
+function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float32})
     # ... только data loss
 end
 ```
@@ -27,7 +27,7 @@ end
 ```julia
 function create_additional_loss(
     loss_config::LossFunctionConfig, 
-    lambda_data_ref::Ref{Float64};
+    lambda_data_ref::Ref{Float32};
     pde_inner_loss_functions::Union{Vector{Function}, Nothing}=nothing,
     bcs_inner_loss_functions::Union{Vector{Function}, Nothing}=nothing
 )
@@ -63,7 +63,7 @@ end
 ```julia
 function create_discretization(chain, ps, loss_config::LossFunctionConfig, 
                               opt_config::OptimizationConfig, domain_config,
-                              lambda_data_ref::Ref{Float64}=Ref{Float64}(loss_config.lambda_data_init))
+                              lambda_data_ref::Ref{Float32}=Ref{Float32}(loss_config.lambda_data_init))
     
     strategy = QuasiRandomTraining(domain_config["num_points"])
     additional_loss_func = create_additional_loss(loss_config, lambda_data_ref)
@@ -75,7 +75,7 @@ end
 ```julia
 function create_discretization(chain, ps, loss_config::LossFunctionConfig, 
                               opt_config::OptimizationConfig, domain_config,
-                              lambda_data_ref::Ref{Float64}=Ref{Float64}(loss_config.lambda_data_init);
+                              lambda_data_ref::Ref{Float32}=Ref{Float32}(loss_config.lambda_data_init);
                               pde_inner_loss_functions::Union{Vector{Function}, Nothing}=nothing,
                               bcs_inner_loss_functions::Union{Vector{Function}, Nothing}=nothing)
     

@@ -48,12 +48,12 @@ export resolve_pml_config, step_indicator
 - enabled: Включить/отключить PML
 """
 struct PMLConfig
-    pml_thickness_ratio::Float64           # Толщина PML слоя в долях от размеров домена (0-1)
-    reflection_coefficient::Float64        # Коэффициент отражения R (по умолчанию 1e-4 = 0.01%)
-    characteristic_frequency::Float64      # Характерная частота сигнала в Гц (для ЭЭГ ~10-100 Гц)
+    pml_thickness_ratio::Float32           # Толщина PML слоя в долях от размеров домена (0-1)
+    reflection_coefficient::Float32        # Коэффициент отражения R (по умолчанию 1e-4 = 0.01%)
+    characteristic_frequency::Float32      # Характерная частота сигнала в Гц (для ЭЭГ ~10-100 Гц)
     profile_order::Int                     # Порядок профиля PML (обычно 2)
-    gamma_max::Union{Float64, Nothing}     # Максимальное значение коэффициента затухания (nothing = авто)
-    alpha_max::Union{Float64, Nothing}     # Максимальное значение коэффициента экранирования (nothing = авто)
+    gamma_max::Union{Float32, Nothing}     # Максимальное значение коэффициента затухания (nothing = авто)
+    alpha_max::Union{Float32, Nothing}     # Максимальное значение коэффициента экранирования (nothing = авто)
     enabled::Bool                          # Флаг включения/отключения PML
 
     """
@@ -62,29 +62,29 @@ struct PMLConfig
     Создаёт конфигурацию PML.
 
     # Параметры:
-    - `pml_thickness_ratio::Float64 = 0.1`: Толщина PML слоя (0.1 = 10% от домена)
-    - `reflection_coefficient::Float64 = 1e-4`: Коэффициент отражения R (1e-4 = 0.01% отражения)
-    - `characteristic_frequency::Float64 = 100.0`: Характерная частота сигнала в Гц
+    - `pml_thickness_ratio::Float32 = 0.1`: Толщина PML слоя (0.1 = 10% от домена)
+    - `reflection_coefficient::Float32 = 1e-4`: Коэффициент отражения R (1e-4 = 0.01% отражения)
+    - `characteristic_frequency::Float32 = 100.0`: Характерная частота сигнала в Гц
     - `profile_order::Int = 2`: Порядок профиля PML
-    - `gamma_max::Union{Float64, Nothing} = nothing`: Максимальное затухание (nothing = авто)
-    - `alpha_max::Union{Float64, Nothing} = nothing`: Максимальное экранирование (nothing = авто)
+    - `gamma_max::Union{Float32, Nothing} = nothing`: Максимальное затухание (nothing = авто)
+    - `alpha_max::Union{Float32, Nothing} = nothing`: Максимальное экранирование (nothing = авто)
     - `enabled::Bool = true`: Включить/отключить PML
     """
     function PMLConfig(; 
-        pml_thickness_ratio::Float64 = 0.1, 
-        reflection_coefficient::Float64 = 1e-4, 
-        characteristic_frequency::Float64 = 100.0,
+        pml_thickness_ratio::Float32 = 0.1f0, 
+        reflection_coefficient::Float32 = Float32(1e-4), 
+        characteristic_frequency::Float32 = 100.0f0,
         profile_order::Int = 2,
-        gamma_max::Union{Float64, Nothing} = nothing, 
-        alpha_max::Union{Float64, Nothing} = nothing, 
+        gamma_max::Union{Float32, Nothing} = nothing, 
+        alpha_max::Union{Float32, Nothing} = nothing, 
         enabled::Bool = true
     )
-        @assert pml_thickness_ratio > 0.0 && pml_thickness_ratio < 0.5 "PML thickness ratio must be between 0 and 0.5"
-        @assert reflection_coefficient > 0.0 && reflection_coefficient < 1.0 "Reflection coefficient must be between 0 and 1"
-        @assert characteristic_frequency > 0.0 "Characteristic frequency must be > 0"
+        @assert pml_thickness_ratio > 0.0f0 && pml_thickness_ratio < 0.5f0 "PML thickness ratio must be between 0 and 0.5"
+        @assert reflection_coefficient > 0.0f0 && reflection_coefficient < 1.0f0 "Reflection coefficient must be between 0 and 1"
+        @assert characteristic_frequency > 0.0f0 "Characteristic frequency must be > 0"
         @assert profile_order >= 1 "Profile order must be >= 1"
         if gamma_max !== nothing
-            @assert gamma_max >= 0.0 "Gamma max must be >= 0"
+            @assert gamma_max >= 0.0f0 "Gamma max must be >= 0"
         end
         if alpha_max !== nothing
             @assert alpha_max >= 0.0 "Alpha max must be >= 0"
@@ -120,31 +120,31 @@ GPU-дружественная индикаторная функция: 0 есл
 Формула: step_indicator(x, x0) = (sign(x - x0) + 1) * 0.5
 """
 function step_indicator(x, x0)
-    return (sign(x - x0) + 1) * 0.5
+    return (sign(x - x0) + 1) * 0.5f0
 end
 
 """
-    compute_gamma_max(f_char::Float64, m::Int, R::Float64)
+    compute_gamma_max(f_char::Float32, m::Int, R::Float32)
 
 Вычисляет оптимальное значение gamma_max для PML по формуле на основе частоты:
 
     γ_max = π * f_char * (m+1) * ln(1/R)
 
 # Параметры:
-- `f_char::Float64`: Характерная частота сигнала в Гц
+- `f_char::Float32`: Характерная частота сигнала в Гц
 - `m::Int`: Порядок профиля PML
-- `R::Float64`: Коэффициент отражения
+- `R::Float32`: Коэффициент отражения
 
 # Возвращает:
-- `Float64`: Оптимальное значение gamma_max
+- `Float32`: Оптимальное значение gamma_max
 
 # Пример:
 ```julia
-gamma_max = compute_gamma_max(100.0, 2, 1e-4)  # ≈ 8680 для ЭЭГ
+gamma_max = compute_gamma_max(100.0f0, 2, Float32(1e-4))  # ≈ 8680 для ЭЭГ
 ```
 """
-function compute_gamma_max(f_char::Float64, m::Int, R::Float64)
-    return π * f_char * (m + 1) * log(1.0 / R)
+function compute_gamma_max(f_char::Float32, m::Int, R::Float32)
+    return π * f_char * (m + 1) * log(1.0f0 / R)
 end
 
 """
@@ -161,45 +161,45 @@ function compute_gamma_max(pml_config::PMLConfig)
 end
 
 """
-    compute_alpha_max(L::Float64, R::Float64)
+    compute_alpha_max(L::Float32, R::Float32)
 
 Вычисляет оптимальное значение alpha_max для PML по формуле:
 
     α_max = (2 * ln(1/R) / L)²
 
 # Параметры:
-- `L::Float64`: Характерный размер домена
-- `R::Float64`: Коэффициент отражения
+- `L::Float32`: Характерный размер домена
+- `R::Float32`: Коэффициент отражения
 
 # Возвращает:
-- `Float64`: Оптимальное значение alpha_max
+- `Float32`: Оптимальное значение alpha_max
 """
-function compute_alpha_max(L::Float64, R::Float64)
-    return (2.0 * log(1.0 / R) / L)^2
+function compute_alpha_max(L::Float32, R::Float32)
+    return (2.0f0 * log(1.0f0 / R) / L)^2
 end
 
 """
-    compute_alpha_max(pml_config::PMLConfig, domain_size::Float64)
+    compute_alpha_max(pml_config::PMLConfig, domain_size::Float32)
 
 Вычисляет alpha_max используя параметры PMLConfig и размер домена.
 """
-function compute_alpha_max(pml_config::PMLConfig, domain_size::Float64)
+function compute_alpha_max(pml_config::PMLConfig, domain_size::Float32)
     return compute_alpha_max(domain_size, pml_config.reflection_coefficient)
 end
 
 """
-    resolve_pml_config(pml_config::PMLConfig, domain_size::Float64)
+    resolve_pml_config(pml_config::PMLConfig, domain_size::Float32)
 
 Разрешает все параметры PML конфигурации, вычисляя автоматические значения.
 
 # Параметры:
 - `pml_config::PMLConfig`: Конфигурация PML
-- `domain_size::Float64`: Размер домена (L)
+- `domain_size::Float32`: Размер домена (L)
 
 # Возвращает:
 - `PMLConfig`: Новая PMLConfig с вычисленными значениями gamma_max и alpha_max
 """
-function resolve_pml_config(pml_config::PMLConfig, domain_size::Float64)
+function resolve_pml_config(pml_config::PMLConfig, domain_size::Float32)
     if !pml_config.enabled
         return pml_config
     end
@@ -267,7 +267,7 @@ end
 """
 function compute_gamma(pml_config::PMLConfig, x, y, z, domains)
     if !pml_config.enabled
-        return 0.0
+        return 0.0f0
     end
 
     # Получаем размеры домена
@@ -327,7 +327,7 @@ end
 """
 function compute_alpha(pml_config::PMLConfig, x, y, z, domains)
     if !pml_config.enabled
-        return 0.0
+        return 0.0f0
     end
 
     # Получаем размеры домена

@@ -133,7 +133,7 @@ eq_ψ_φx = ∂ψ_φx/∂t ~ -damping_x * ψ_φx + source_φx
 **PMLConfig (строки 70-77):**
 ```julia
 function PMLConfig(; 
-    sigma_max::Float64 = 0.0,  # ⚠️ ПРОБЛЕМА!
+    sigma_max::Float32 = 0.0,  # ⚠️ ПРОБЛЕМА!
     ...
 )
 ```
@@ -253,7 +253,7 @@ return base_dim + pml_dim  # = 20 при PML enabled
 
 3. Изменить значение по умолчанию:
    ```julia
-   sigma_max::Float64 = -1.0  # -1 означает автоматический расчёт
+   sigma_max::Float32 = -1.0  # -1 означает автоматический расчёт
    ```
 
 ### 5.2 Создание тестов

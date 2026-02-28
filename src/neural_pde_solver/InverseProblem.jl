@@ -26,19 +26,22 @@ results = run_eeg_inverse_problem(nn_config, opt_config, loss_config, pml_config
 
 module InverseProblem
 
+using NeuralPDE, Lux, LuxCUDA, Random, ComponentArrays, CUDA
+using OptimizationOptimisers, OptimizationOptimJL, SciMLBase
+using ModelingToolkit: @named
+using Plots
+using Statistics: mean
+using JLD2: jldopen
+using TensorBoardLogger
+
 using ..PDEDefinitions
 using ..NeuralNetwork
 using ..Optimization
 using ..PML
 
-using NeuralPDE, Lux, LuxCUDA, Random, ComponentArrays, CUDA
-using ModelingToolkit: @named
 using ..PDEDefinitions: PhysicalConstants, create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func 
 using ..NeuralNetwork: NeuralNetworkConfig, create_neural_network, initialize_parameters, validate_config
-using ..Optimization: OptimizationConfig, LossFunctionConfig, validate_optimization_config, create_discretization, create_optimization_callback, data_loss, derivative_loss, setup_optimization, solve
-using Plots
-using Statistics: mean
-using JLD2: jldopen
+using ..Optimization: OptimizationConfig, LossFunctionConfig, set_inner_domain!, validate_optimization_config, create_discretization, create_optimization_callback, data_loss, derivative_loss, setup_optimization, solve, cosine_annealing_lr, warmup_cosine_lr
 using ..PDEDefinitions: create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func, PhysicalConstants
 
 """
@@ -68,11 +71,11 @@ function normalize_measured_points(measured_points)
 end
 
 """
-    preprocess_measured_data(measured_points::Vector{Vector{Float64}}, time_steps::Int)
+    preprocess_measured_data(measured_points::Vector{Vector{Float32}}, time_steps::Int)
     Interpolate measured data to create continuous functions
     Compute temporal derivatives
 """
-function preprocess_measured_data(measured_points::Vector{Vector{Float64}}, time_steps::Int)
+function preprocess_measured_data(measured_points::Vector{Vector{Float32}}, time_steps::Int)
     # Interpolate measured data to create continuous functions
     interpolated_data = [CubicSplineInterpolation(1:time_steps, [point[5] for point in measured_points if point[4] == t]) for t in 1:time_steps]
 
@@ -84,20 +87,20 @@ end
 
 # Структура конфигурации домена
 struct DomainConfig
-    x_range::Vector{Float64}
-    y_range::Vector{Float64}
-    z_range::Vector{Float64}
-    t_range::Vector{Float64}
+    x_range::Vector{Float32}
+    y_range::Vector{Float32}
+    z_range::Vector{Float32}
+    t_range::Vector{Float32}
     num_points::Int
     
-    function DomainConfig(; x_range=[-10.0, 10.0], y_range=[-10.0, 10.0], 
-                          z_range=[-10.0, 10.0], t_range=[0.0, 1.0], num_points=100)
+    function DomainConfig(; x_range=[-10.0f0, 10.0f0], y_range=[-10.0f0, 10.0f0], 
+                          z_range=[-10.0f0, 10.0f0], t_range=[0.0f0, 1.0f0], num_points=100)
         return new(x_range, y_range, z_range, t_range, num_points)
     end
 end
 
 # Экспортируем основные функции
-export run_eeg_inverse_problem, create_complete_setup
+export run_eeg_inverse_problem, create_complete_setup, run_three_stage_optimization
 export analyze_results, save_results, load_results, DomainConfig, PMLConfig
 
 """
@@ -113,10 +116,10 @@ function create_complete_setup(; measured_points, nn_config::Union{NeuralNetwork
                                opt_config::OptimizationConfig,
                                loss_config::LossFunctionConfig,
                                domain_config::Dict{String, Any}=Dict(
-                                   "x_range" => [-10.0, 10.0],
-                                   "y_range" => [-10.0, 10.0], 
-                                   "z_range" => [-10.0, 10.0],
-                                   "t_range" => [0.0, 1.0],
+                                   "x_range" => [-10.0f0, 10.0f0],
+                                   "y_range" => [-10.0f0, 10.0f0], 
+                                   "z_range" => [-10.0f0, 10.0f0],
+                                   "t_range" => [0.0f0, 1.0f0],
                                    "num_points" => 100
                                ),
                                pml_config::PMLConfig=PMLConfig())
@@ -144,9 +147,9 @@ function _create_complete_setup_standard(; measured_points, nn_config::NeuralNet
     normalized_points, norm_factor = normalize_measured_points(measured_points)
     println("✓ Данные нормированы, фактор: $(round(norm_factor, digits=6))")
     
-    # Размерность выхода всегда равна 8 (новый подход PML не требует дополнительных выходов)
-    output_dim = 8
-    println("✓ Размерность выхода нейросети: $output_dim (PML: $(pml_config.enabled ? "включён" : "отключён"))")
+    # Определяем output_dim на основе use_derivatives из конфигурации
+    output_dim = nn_config.use_derivatives ? 24 : 8
+    println("✓ Размерность выхода нейросети: $output_dim (PML: $(pml_config.enabled ? "включён" : "отключён"), производные: $(nn_config.use_derivatives))")
     
     # Обновляем конфигурацию нейросети с правильной размерностью выхода
     nn_config_updated = NeuralNetworkConfig(;
@@ -164,45 +167,22 @@ function _create_complete_setup_standard(; measured_points, nn_config::NeuralNet
     # Создаем физические константы
     constants = PhysicalConstants()
     
-    # Создаем переменные и области
-    variables = create_variables()
+    # Создаем переменные и области с учетом use_derivatives из конфига
+    variables = create_variables(use_derivatives=nn_config.use_derivatives)
     domains = create_domains(variables, domain_config["x_range"], domain_config["y_range"], 
                             domain_config["z_range"], domain_config["t_range"])
     
     # Создаем граничные условия
     bcs = create_boundary_conditions(constants, variables, domains; pml_config=pml_config)
 
-    # Создаем PDE систему с учетом PML
-    pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config)
+    # Создаем PDE систему с учетом PML и use_derivatives
+    pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config, include_derivatives=nn_config.use_derivatives)
 
     normalized_points = normalized_points |> gpu_device()
     println("✓ Используем нормированные измеренные точки")
     
     # Обновляем loss_config с измеренными точками и параметрами домена
-    loss_config = LossFunctionConfig(; 
-                lambda_pde = loss_config.lambda_pde,
-                lambda_bc = loss_config.lambda_bc,
-                lambda_data_init = loss_config.lambda_data_init,
-                lambda_min = loss_config.lambda_min,
-                lambda_max = loss_config.lambda_max,
-                lambda_time = loss_config.lambda_time,
-                lambda_schedule_type = loss_config.lambda_schedule_type,
-                lambda_schedule = loss_config.lambda_schedule,
-                # Параметры регуляризации энергии поля
-                lambda_field = loss_config.lambda_field,
-                field_energy_scale = loss_config.field_energy_scale,
-                num_field_time_samples = loss_config.num_field_time_samples,
-                # Параметры домена - автоматически вычисляем inner_domain
-                x_range = domain_config["x_range"],
-                y_range = domain_config["y_range"],
-                z_range = domain_config["z_range"],
-                t_range = domain_config["t_range"],
-                pml_thickness_ratio = pml_config.pml_thickness_ratio,
-                # Параметры адаптивного взвешивания
-                enable_adaptive_loss = loss_config.enable_adaptive_loss,
-                adaptive_loss_reweight_every = loss_config.adaptive_loss_reweight_every,
-                adaptive_weight_inertia = loss_config.adaptive_weight_inertia,
-                measured_points=normalized_points)
+    set_inner_domain!(loss_config, domain_config["x_range"], domain_config["y_range"], domain_config["z_range"], pml_config.pml_thickness_ratio)
     
     # Создаем нейронную сеть
     chain = create_neural_network(nn_config_updated)
@@ -238,49 +218,27 @@ function _create_complete_setup_temporal(; measured_points, nn_config::TemporalA
     println("   Spatial: [x,y,z] → $(nn_config.spatial_hidden_layers) → $(nn_config.spatial_output_dim)D")
     println("   Temporal: Fourier($(nn_config.num_fourier_frequencies)) → $(nn_config.temporal_hidden_layers) → $(nn_config.temporal_output_dim)D")
     println("   Fusion: $(nn_config.spatial_output_dim + nn_config.temporal_output_dim)D → $(nn_config.fusion_hidden_layers) → $(nn_config.output_dim)D")
+    println("   use_derivatives: $(nn_config.use_derivatives)")
     
     # Создаем физические константы
     constants = PhysicalConstants()
     
-    # Создаем переменные и области
-    variables = create_variables()
+    # Создаем переменные и области с учетом use_derivatives из конфига
+    variables = create_variables(use_derivatives=nn_config.use_derivatives)
     domains = create_domains(variables, domain_config["x_range"], domain_config["y_range"], 
                             domain_config["z_range"], domain_config["t_range"])
     
     # Создаем граничные условия
     bcs = create_boundary_conditions(constants, variables, domains; pml_config=pml_config)
 
-    # Создаем PDE систему с учетом PML
-    pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config)
+    # Создаем PDE систему с учетом PML и use_derivatives
+    pde_system = create_pde_system(constants, variables, bcs, domains; pml_config=pml_config, include_derivatives=nn_config.use_derivatives)
 
     normalized_points = normalized_points |> gpu_device()
     println("✓ Используем нормированные измеренные точки")
     
     # Обновляем loss_config с измеренными точками и параметрами домена
-    loss_config = LossFunctionConfig(; 
-                lambda_pde = loss_config.lambda_pde,
-                lambda_bc = loss_config.lambda_bc,
-                lambda_data_init = loss_config.lambda_data_init,
-                lambda_min = loss_config.lambda_min,
-                lambda_max = loss_config.lambda_max,
-                lambda_time = loss_config.lambda_time,
-                lambda_schedule_type = loss_config.lambda_schedule_type,
-                lambda_schedule = loss_config.lambda_schedule,
-                # Параметры регуляризации энергии поля
-                lambda_field = loss_config.lambda_field,
-                field_energy_scale = loss_config.field_energy_scale,
-                num_field_time_samples = loss_config.num_field_time_samples,
-                # Параметры домена - автоматически вычисляем inner_domain
-                x_range = domain_config["x_range"],
-                y_range = domain_config["y_range"],
-                z_range = domain_config["z_range"],
-                t_range = domain_config["t_range"],
-                pml_thickness_ratio = pml_config.pml_thickness_ratio,
-                # Параметры адаптивного взвешивания
-                enable_adaptive_loss = loss_config.enable_adaptive_loss,
-                adaptive_loss_reweight_every = loss_config.adaptive_loss_reweight_every,
-                adaptive_weight_inertia = loss_config.adaptive_weight_inertia,
-                measured_points=normalized_points)
+    set_inner_domain!(loss_config, domain_config["x_range"], domain_config["y_range"], domain_config["z_range"], pml_config.pml_thickness_ratio)
     
     # Создаем Temporal-Aware нейронную сеть
     chain = create_temporal_aware_network(nn_config)
@@ -302,10 +260,10 @@ function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetwor
                                 opt_config::OptimizationConfig,
                                 loss_config::LossFunctionConfig,
                                 domain_config::Dict{Any, Any}=Dict(
-                                    "x_range" => [-10.0, 10.0],
-                                    "y_range" => [-10.0, 10.0], 
-                                    "z_range" => [-10.0, 10.0],
-                                    "t_range" => [0.0, 1.0]
+                                    "x_range" => [-10.f0, 10.0f0],
+                                    "y_range" => [-10.0f0, 10.0f0], 
+                                    "z_range" => [-10.0f0, 10.0f0],
+                                    "t_range" => [0.0f0, 1.0f0]
                                 ),
                                 pml_config::PMLConfig=PMLConfig(),
                                 )
@@ -384,8 +342,18 @@ function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetwor
     
     println("🔄 Начинаем оптимизацию...")
     
-    # Запускаем оптимизацию
-    res = solve(prob, opt; maxiters = setup.configs.opt_config.max_iterations, callback)
+    # Проверяем, нужно ли использовать трёхэтапную оптимизацию
+    opt_config = setup.configs.opt_config
+    loss_config = setup.configs.loss_config
+    
+    if opt_config.three_stage_optimization
+        println("🎯 Используем трёхэтапную оптимизацию")
+        res = run_three_stage_optimization(prob, opt_config, loss_config,
+                                           discretization, setup.pde_system, setup.bcs, setup.domains, data_loss_raw_func, lambda_data_ref)
+    else
+        # Запускаем стандартную оптимизацию
+        res = solve(prob, opt; maxiters = setup.configs.opt_config.max_iterations, callback)
+    end
     
     println("✓ Оптимизация завершена")
     
@@ -427,14 +395,14 @@ function analyze_results(phi, params, setup, domain_config)
         all_data_cpu = all_data isa CuArray ? (all_data |> cpud) : all_data
         
         # [4, N] - координаты
-        coords_batch = Float64.(all_data_cpu[1:4, :])
+        coords_batch = Float32.(all_data_cpu[1:4, :])
         # [N] - измеренные значения
-        measured_phi_norm = vec(Float64.(all_data_cpu[5, :]))
+        measured_phi_norm = vec(Float32.(all_data_cpu[5, :]))
         
         # Вызываем сеть один раз для всех точек
         pred_all = phi(coords_batch, params |> cpud)
         # Извлекаем только φ (первая строка) и переносим на CPU
-        phi_pred_norm = Float64.(vec(pred_all[1, :]) |> cpud)
+        phi_pred_norm = Float32.(vec(pred_all[1, :]) |> cpud)
         
         # Деанормализуем все значения сразу
         measured_phi = measured_phi_norm .* norm_factor
@@ -446,21 +414,22 @@ function analyze_results(phi, params, setup, domain_config)
         z_coords = vec(coords_batch[3, :])
         t_coords = vec(coords_batch[4, :])
     else
-        # Пустой случай
-        x_coords = Float64[]
-        y_coords = Float64[]
-        z_coords = Float64[]
-        t_coords = Float64[]
-        measured_phi = Float64[]
-        predicted_phi = Float64[]
+        # Пустой случай - инициализируем все переменные явно
+        x_coords = Float32[]
+        y_coords = Float32[]
+        z_coords = Float32[]
+        t_coords = Float32[]
+        measured_phi = Float32[]
+        predicted_phi = Float32[]
     end
     
     # Группируем по временным шагам для анализа динамики
-    time_steps = collect(unique(t_coords))
+    # Явно приводим к Float32 для соответствия типу словаря
+    time_steps = Float32.(collect(unique(t_coords)))
     sort!(time_steps)
     
     # Словарь для хранения метрик по временным шагам
-    time_step_metrics = Dict{Float64, Dict{String, Float64}}()
+    time_step_metrics = Dict{Float32, Dict{String, Float32}}()
     
     for t_step in time_steps
         # Находим точки для текущего временного шага
@@ -484,15 +453,28 @@ function analyze_results(phi, params, setup, domain_config)
         end
     end
     
-    # Общие метрики по всем датчикам
-    overall_mse = sum((measured_phi .- predicted_phi).^2) / length(measured_phi)
-    overall_mae = sum(abs.(measured_phi .- predicted_phi)) / length(measured_phi)
-    overall_max_error = maximum(abs.(measured_phi .- predicted_phi))
+    # Общие метрики по всем датчикам (с защитой от деления на ноль)
+    n_measured = length(measured_phi)
+    if n_measured > 0
+        overall_mse = sum((measured_phi .- predicted_phi).^2) / n_measured
+        overall_mae = sum(abs.(measured_phi .- predicted_phi)) / n_measured
+        overall_max_error = maximum(abs.(measured_phi .- predicted_phi))
+    else
+        overall_mse = Float32(0.0)
+        overall_mae = Float32(0.0)
+        overall_max_error = Float32(0.0)
+    end
     
-    # Средние метрики по временным шагам
-    avg_time_mse = mean([metrics["mse"] for metrics in values(time_step_metrics)])
-    avg_time_mae = mean([metrics["mae"] for metrics in values(time_step_metrics)])
-    avg_time_max_error = mean([metrics["max_error"] for metrics in values(time_step_metrics)])
+    # Средние метрики по временным шагам (с защитой от пустого словаря)
+    if !isempty(time_step_metrics)
+        avg_time_mse = mean([metrics["mse"] for metrics in values(time_step_metrics)])
+        avg_time_mae = mean([metrics["mae"] for metrics in values(time_step_metrics)])
+        avg_time_max_error = mean([metrics["max_error"] for metrics in values(time_step_metrics)])
+    else
+        avg_time_mse = Float32(0.0)
+        avg_time_mae = Float32(0.0)
+        avg_time_max_error = Float32(0.0)
+    end
     
     # Добавляем расчет значений φ по равномерной сетке для каждого временного шага
     println("📊 Расчет значений φ по равномерной сетке для визуализации...")
@@ -504,7 +486,7 @@ function analyze_results(phi, params, setup, domain_config)
     z_grid = range(domain_config["z_range"][1], domain_config["z_range"][2], length=grid_resolution)
     
     # Словарь для хранения полей потенциала по времени
-    uniform_grid_data = Dict{Float64, Dict{String, Any}}()
+    uniform_grid_data = Dict{Float32, Dict{String, Any}}()
     
     # Выбираем 5 равномерно распределенных временных шагов
     n_time_steps = length(time_steps)
@@ -515,7 +497,7 @@ function analyze_results(phi, params, setup, domain_config)
         println("  ⏰ Обработка временного шага t = $(round(t_step, digits=3))")
         
         # Создаем 3D сетку для данного временного шага
-        phi_field = Array{Float64, 3}(undef, length(x_grid), length(y_grid), length(z_grid))
+        phi_field = Array{Float32, 3}(undef, length(x_grid), length(y_grid), length(z_grid))
         
         # Заполняем сетку значениями потенциала
         for (i, x) in enumerate(x_grid)
@@ -526,7 +508,7 @@ function analyze_results(phi, params, setup, domain_config)
                         phi_field[i, j, k] = phi_val * norm_factor  # Деанормируем
                     catch e
                         # Если произошла ошибка, заполняем нулем
-                        phi_field[i, j, k] = 0.0
+                        phi_field[i, j, k] = 0.0f0
                     end
                 end
             end
@@ -688,12 +670,12 @@ function create_visualization_plots(results, save_path::String="figures/")
         y_range = range(minimum(y_t), maximum(y_t), length=20)
         
         # Интерполируем данные на сетку для контурных графиков
-        measured_grid = Matrix{Float64}(undef, length(x_range), length(y_range))
-        predicted_grid = Matrix{Float64}(undef, length(x_range), length(y_range))
-        error_grid = Matrix{Float64}(undef, length(x_range), length(y_range))
+        measured_grid = Matrix{Float32}(undef, length(x_range), length(y_range))
+        predicted_grid = Matrix{Float32}(undef, length(x_range), length(y_range))
+        error_grid = Matrix{Float32}(undef, length(x_range), length(y_range))
         
-        for j in 1:length(x_range)
-            for k in 1:length(y_range)
+        for j in axes(x_range, 1)
+            for k in axes(y_range, 1)
                 # Находим ближайшие точки датчиков
                 distances = sqrt.((x_t .- x_range[j]).^2 .+ (y_t .- y_range[k]).^2)
                 if minimum(distances) < 2.0  # Если есть достаточно близкие датчики
@@ -780,6 +762,12 @@ function create_visualization_plots(results, save_path::String="figures/")
     time_steps = results["time_steps"]
     time_metrics = results["time_step_metrics"]
     
+    # Защита от пустых данных
+    if isempty(time_steps) || isempty(time_metrics)
+        println("⚠️ Нет данных для построения графика метрик по времени")
+        return (combined_plot, nothing)
+    end
+    
     mse_values = [time_metrics[t]["mse"] for t in time_steps]
     mae_values = [time_metrics[t]["mae"] for t in time_steps]
     max_error_values = [time_metrics[t]["max_error"] for t in time_steps]
@@ -863,6 +851,136 @@ function get_available_devices()
     end
     
     return devices
+end
+
+"""
+    run_three_stage_optimization(prob, opt_config, loss_config,
+                                  discretization, pde_system, bcs, domains, data_loss_raw_func, lambda_data_ref)
+
+Запускает трёхэтапную оптимизацию:
+1. Adam с высоким LR (20% итераций)
+2. LBFGS для уточнения (10% итераций) 
+3. Adam с Cosine Annealing scheduler (70% итераций)
+
+# Аргументы
+- `prob`: OptimizationProblem
+- `opt_config`: OptimizationConfig с параметрами оптимизатора (max_iterations)
+- `loss_config`: LossFunctionConfig с параметрами loss
+- `discretization`: Объект дискретизации для создания callback'ов
+- `pde_system`: Система PDE
+- `bcs`: Граничные условия
+- `domains`: Области
+- `data_loss_raw_func`: Функция для вычисления сырого data loss
+- `lambda_data_ref`: Ссылка на текущее значение веса данных
+
+# Возвращает
+- Результат оптимизации
+"""
+function run_three_stage_optimization(prob, opt_config::OptimizationConfig, loss_config::LossFunctionConfig,
+                                       discretization, pde_system, bcs, domains, data_loss_raw_func, lambda_data_ref::Base.RefValue{Float32})
+    # Используем max_iterations из opt_config
+    total_iters = opt_config.max_iterations > 0 ? opt_config.max_iterations : 3000
+    
+    # Вычисляем количество итераций для каждого этапа из opt_config
+    adam1_iters = round(Int, total_iters * opt_config.adam1_ratio)
+    lbfgs_iters = round(Int, total_iters * opt_config.lbfgs_ratio)
+    adam2_iters = round(Int, total_iters * opt_config.adam2_ratio)
+    
+
+    println("🔄 Трёхэтапная оптимизация:")
+    println("   Этап 1: Adam (LR=$(opt_config.adam1_lr), итераций=$adam1_iters)")
+    println("   Этап 2: LBFGS (итераций=$lbfgs_iters)")
+    println("   Этап 3: Adam + Scheduler (LR=$(opt_config.adam2_lr), итераций=$adam2_iters)")
+    
+    # Создаём копию prob с начальными параметрами
+    current_params = prob.u0
+    
+    dev = Lux.gpu_device()
+    
+    # === СОЗДАЁМ ОБЩИЙ ЛОГГЕР ДЛЯ ВСЕХ ЭТАПОВ ===
+    logger = opt_config.use_tensorboard ? TBLogger(opt_config.log_directory) : nothing
+    if logger !== nothing
+        println("   📝 TensorBoard логгер создан: $(opt_config.log_directory)")
+    end
+    
+    # === ЭТАП 1: Adam с высоким LR ===
+    println("\n📈 Этап 1: Adam с высоким LR")
+    opt1 = OptimizationOptimisers.Adam(opt_config.adam1_lr)
+    
+    # Создаём новый prob для каждого этапа
+    prob1 = SciMLBase.remake(prob; u0=current_params)
+    
+    # Callback для этапа 1 начинает с initial_iter=0 (по умолчанию)
+    # Передаём общий logger
+    callback_stage1 = create_optimization_callback(
+        opt_config, discretization, pde_system, bcs, domains,
+        loss_config, lambda_data_ref, data_loss_raw_func;
+        initial_iter=0,
+        logger=logger
+    )
+    
+    res1 = solve(prob1, opt1; maxiters=adam1_iters, callback=callback_stage1)
+    current_params = res1.u
+    
+    println("   Loss после этапа 1: $(res1.objective)")
+    
+    # === ЭТАП 2: LBFGS ===
+    println("\n📉 Этап 2: LBFGS")
+    opt2 = OptimizationOptimJL.LBFGS()
+    
+    prob2 = SciMLBase.remake(prob; u0=current_params)
+    
+    # Callback для этапа 2 начинает с initial_iter=adam1_iters
+    # Передаём общий logger
+    callback_stage2 = create_optimization_callback(
+        opt_config, discretization, pde_system, bcs, domains,
+        loss_config, lambda_data_ref, data_loss_raw_func;
+        initial_iter=adam1_iters,
+        logger=logger
+    )
+    
+    res2 = solve(prob2, opt2; maxiters=lbfgs_iters, callback=callback_stage2)
+    current_params = res2.u
+    
+    println("   Loss после этапа 2: $(res2.objective)")
+    
+    # === ЭТАП 3: Adam с Cosine Annealing ===
+    println("\n📊 Этап 3: Adam с Cosine Annealing Scheduler")
+    opt3 = OptimizationOptimisers.Adam(opt_config.adam2_lr)
+    
+    prob3 = SciMLBase.remake(prob; u0=current_params)
+    
+    # Создаём scheduler функцию
+    # Счетчик итераций для scheduler общий через все этапы (начинается с adam1_iters + lbfgs_iters)
+    total_iters_before_stage3 = adam1_iters + lbfgs_iters
+    scheduler_fn = opt_config.scheduler_type == :warmup_cosine ?
+        (t -> warmup_cosine_lr(Float32(opt_config.adam2_lr), t, adam2_iters, opt_config.scheduler_warmup)) :
+        (t -> cosine_annealing_lr(Float32(opt_config.adam2_lr), t, adam2_iters))
+    
+    # Создаём callback с поддержкой scheduler через общий create_optimization_callback
+    # initial_iter - для логирования (общий счетчик)
+    # initial_scheduler_iter - для scheduler (начинается с 0 на 3-м этапе, т.к. scheduler_fn работает относительно своего этапа)
+    # Передаём общий logger
+    callback_stage3 = create_optimization_callback(
+        opt_config, discretization, pde_system, bcs, domains,
+        loss_config, lambda_data_ref, data_loss_raw_func;
+        scheduler_fn=scheduler_fn,
+        initial_iter=total_iters_before_stage3,  # Для логирования - общий счетчик
+        logger=logger
+    )
+    
+    res3 = solve(prob3, opt3; maxiters=adam2_iters, callback=callback_stage3)
+    current_params = res3.u
+    
+    println("   Loss после этапа 3: $(res3.objective)")
+    
+    # Объединяем результаты
+    total_loss = res3.objective
+    
+    println("\n✅ Трёхэтапная оптимизация завершена. Финальный loss: $(total_loss)")
+    
+    # Возвращаем результат в том же формате, что и solve
+    return res3
 end
 
 # Инициализация при загрузке модуля

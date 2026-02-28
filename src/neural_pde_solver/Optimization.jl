@@ -18,6 +18,7 @@ using Optimization, OptimizationOptimJL, OptimizationOptimisers, OptimizationOpt
 using Integrals
 using ProgressBars, Printf, CUDA, Lux, LuxCUDA, ComponentArrays
 using CUDA: cpu_device, gpu_device, allowscalar
+using ForwardDiff
 using Printf
 using Zygote
 using Statistics
@@ -30,12 +31,61 @@ using ..PDEDefinitions: PhysicalConstants
 using ..NeuralNetwork: NeuralNetworkConfig
 
 # Экспортируем основные функции
-export OptimizationConfig, LossFunctionConfig
+export OptimizationConfig, LossFunctionConfig, set_inner_domain!
 export create_additional_loss, create_optimization_callback
 export setup_optimization, create_discretization
 export log_training_progress, validate_optimization_config
 export mc_integral_gpu, compute_field_energy_loss
 export data_loss, derivative_loss
+export compute_tv_regularization, compute_l1_regularization, cosine_annealing_lr, warmup_cosine_lr
+
+"""
+    cosine_annealing_lr(base_lr::Float32, t::Int, T_max::Int)::Float32
+
+Cosine Annealing планировщик learning rate.
+
+lr(t) = base_lr * 0.5 * (1 + cos(π * t / T_max))
+
+# Аргументы
+- `base_lr`: Базовый learning rate
+- `t`: Текущая итерация
+- `T_max`: Максимальное количество итераций
+
+# Возвращает
+- Learning rate для текущей итерации
+"""
+function cosine_annealing_lr(base_lr::Float32, t::Int, T_max::Int)::Float32
+    return base_lr * 0.5 * (1.0 + cos(π * t / T_max))
+end
+
+"""
+    warmup_cosine_lr(base_lr::Float32, t::Int, T_max::Int, warmup_iters::Int)::Float32
+
+Warmup + Cosine Annealing планировщик learning rate.
+
+- До warmup_iters: линейный warmup от 0 до base_lr
+- После warmup_iters: cosine annealing
+
+# Аргументы
+- `base_lr`: Базовый learning rate
+- `t`: Текущая итерация
+- `T_max`: Максимальное количество итераций
+- `warmup_iters`: Количество warmup итераций
+
+# Возвращает
+- Learning rate для текущей итерации
+"""
+function warmup_cosine_lr(base_lr::Float32, t::Int, T_max::Int, warmup_iters::Int)::Float32
+    if t <= warmup_iters
+        # Linear warmup
+        return base_lr * (t / warmup_iters)
+    else
+        # Cosine decay after warmup
+        t_after_warmup = t - warmup_iters
+        T_after_warmup = T_max - warmup_iters
+        return base_lr * 0.5 * (1.0 + cos(π * t_after_warmup / T_after_warmup))
+    end
+end
 
 """
     mc_integral_gpu(f_batch, θ, lb, ub, N)
@@ -135,7 +185,7 @@ function compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb::Ve
             time_idx_gpu = time_idx_cpu |> dev
             
             # Создаём массив временных значений используя vectorized индексацию
-            # times - это Vector{Float64}, преобразуем в GPU массив
+            # times - это Vector{Float32}, преобразуем в GPU массив
             times_gpu = Float32.(times) |> dev
             # Индексируем вектор times по вектору индексов - полностью vectorized
             t_vals = ignore_derivatives() do
@@ -155,8 +205,13 @@ function compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb::Ve
             θ_gpu = θ_inner |> dev
             pred = phi_pred_fun(X_full, θ_gpu)
             
-            # pred имеет размер [8, batch_size * n_times]
-            # reshape для усреднения по времени
+            # Определяем размерность выхода динамически
+            # pred имеет размер [output_dim, batch_size * n_times]
+            # Используем только первые 8 компонентов: φ, Ax, Ay, Az, ρ, jx, jy, jz
+            output_dim = size(pred, 1)
+            n_components = min(8, output_dim)
+            
+            # reshape для усреднения по времени (используем только первые 8 компонентов)
             phi = reshape(pred[1, :], n_times, batch_size)
             Ax = reshape(pred[2, :], n_times, batch_size)
             Ay = reshape(pred[3, :], n_times, batch_size)
@@ -190,28 +245,187 @@ function compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb::Ve
     return (E_field=E_field, E_field_normalized=E_field_normalized, L_field=L_field)
 end
 
+"""
+    compute_l1_regularization(θ, lambda_l1::Float32)
+
+Вычисляет L1 регуляризацию на все веса нейросети.
+
+L1 = λ * Σ|w| - способствует sparsity (занулению весов)
+
+# Аргументы
+- `θ`: Параметры нейросети
+- `lambda_l1`: Вес L1 регуляризации
+
+# Возвращает
+- NamedTuple с полями:
+  - `l1`: L1 норма (сумма абсолютных значений)
+  - `L_l1`: L1 лосс (L1 * lambda_l1)
+"""
+function compute_l1_regularization(θ, lambda_l1::Real)
+    # L1 норма: сумма абсолютных значений всех параметров
+    # θ может быть ComponentArray или обычный массив
+    l1_norm = sum(abs.(Float32.(θ)))
+    
+    # L1 лосс с весом
+    L_l1 = Zygote.dropgrad(lambda_l1) * l1_norm
+    
+    return (l1=l1_norm, L_l1=L_l1)
+end
+
+"""
+    compute_tv_regularization(phi_pred_fun, θ, measured_time, inner_lb, inner_ub, 
+                            tv_epsilon::T, tv_scale::T, num_tv_time_samples::Int=5, N_mc::Int=1000)
+
+Вычисляет Total Variation (TV) регуляризацию на плотность заряда ρ.
+
+TV регуляризация способствует сохранению discontinuities (точечных источников),
+что идеально для моделирования токовых диполей - решение состоит из множества точечных зарядов.
+
+Формула: TV = ∫√(|∇ρ|² + ε²) dV
+- ρ - плотность заряда (5-й компонент выхода сети)
+- ε - параметр сглаживания для дифференцируемости
+- Интегрирование по пространству и усреднение по времени
+
+# Аргументы
+- `phi_pred_fun`: Функция предсказания сети (x, θ) -> pred
+- `θ`: Параметры сети
+- `measured_time`: Вектор временных точек измеренных данных
+- `inner_lb`: Нижние границы внутренней области [x, y, z]
+- `inner_ub`: Верхние границы внутренней области [x, y, z]
+- `tv_epsilon`: Параметр сглаживания (default: 1e-5)
+- `tv_scale`: Масштаб для экспоненциального TV лосса (default: 0.1)
+- `num_tv_time_samples`: Количество временных срезов (default: 5)
+- `N_mc`: Количество точек для Monte Carlo интегрирования (default: 1000)
+
+# Возвращает
+- NamedTuple с полями:
+  - `TV`: Total Variation интеграл
+  - `L_tv`: Нормализованный TV лосс
+"""
+function compute_tv_regularization(phi_pred_fun, θ, measured_time, inner_lb::Vector, inner_ub::Vector,
+                                   tv_epsilon::T, num_tv_time_samples::Int=5, N_mc::Int=1000) where T <: Real
+    dev = Lux.gpu_device()
+    
+    # Создаём временные точки
+    if length(measured_time) < 2
+        error("measured_time must contain at least 2 distinct time points")
+    end
+    t_min = minimum(measured_time)
+    t_max = maximum(measured_time)
+    # Используем ignore_derivatives для range - Zygote не имеет adjoint для StepRangeLen
+    time_points = ignore_derivatives() do
+        collect(range(t_min, t_max, length=num_tv_time_samples))
+    end
+    
+    # Функция для вычисления TV на ρ: √(|∂ρ/∂x|² + |∂ρ/∂y|² + |∂ρ/∂z|² + ε)
+    # ρ - это 5-й компонент выхода сети
+    # Градиенты вычисляются через конечные разности (vectorized, без циклов и мутаций)
+    tv_mc = let times = time_points, n_times_val = length(time_points), eps = Float32(tv_epsilon),
+              phi_fn = phi_pred_fun, device = dev
+        function(x_spatial::AbstractArray, θ_inner)
+            batch_size = size(x_spatial, 2)
+            n_times = n_times_val
+            
+            θ_gpu = θ_inner |> device
+            
+            # Используем первую временную точку для вычисления градиентов
+            t0 = Float32(times[1])
+            t_vec = fill(t0, batch_size) |> device
+            
+            # Полные координаты [x, y, z, t]
+            X_full = CUDA.vcat(x_spatial, reshape(t_vec, 1, :))
+            
+            # Вычисляем ρ для всех точек батча
+            pred = phi_fn(X_full, θ_gpu)
+            rho = pred[5, :]  # ρ - 5-й компонент
+            
+            # Вычисляем пространственные градиенты через конечные разности
+            # Используем малое смещение h для аппроксимации ∂ρ/∂x, ∂ρ/∂y, ∂ρ/∂z
+            h = 1.0f-3
+            
+            # Создаём векторы смещения на GPU (нельзя broadcast CPU вектор с GPU массивом)
+            h_vec_x = CUDA.CuArray(Float32[h, 0.0f0, 0.0f0])
+            h_vec_y = CUDA.CuArray(Float32[0.0f0, h, 0.0f0])
+            h_vec_z = CUDA.CuArray(Float32[0.0f0, 0.0f0, h])
+            
+            # Смещение по x
+            x_plus_h = x_spatial .+ h_vec_x
+            X_x_plus = CUDA.vcat(x_plus_h, reshape(t_vec, 1, :))
+            rho_x_plus = phi_fn(X_x_plus, θ_gpu)[5, :]
+            grad_x = (rho_x_plus .- rho) ./ h
+            
+            # Смещение по y
+            y_plus_h = x_spatial .+ h_vec_y
+            X_y_plus = CUDA.vcat(y_plus_h, reshape(t_vec, 1, :))
+            rho_y_plus = phi_fn(X_y_plus, θ_gpu)[5, :]
+            grad_y = (rho_y_plus .- rho) ./ h
+            
+            # Смещение по z
+            z_plus_h = x_spatial .+ h_vec_z
+            X_z_plus = CUDA.vcat(z_plus_h, reshape(t_vec, 1, :))
+            rho_z_plus = phi_fn(X_z_plus, θ_gpu)[5, :]
+            grad_z = (rho_z_plus .- rho) ./ h
+            
+            # TV: √(grad_x² + grad_y² + grad_z² + ε)
+            tv_per_point = sqrt.(grad_x.^2 .+ grad_y.^2 .+ grad_z.^2 .+ eps)
+            
+            return vec(tv_per_point)
+        end
+    end
+    
+    # Вычисляем интеграл
+    tv_integral = mc_integral_gpu(tv_mc, θ, inner_lb, inner_ub, N_mc)
+    
+    # Нормировка на объём
+    volume = prod(Float32.(inner_ub) .- Float32.(inner_lb))
+    L_tv = tv_integral / volume
+    
+    return (TV=tv_integral, L_tv=L_tv)
+end
+
 # Структура конфигурации оптимизации
 struct OptimizationConfig
     optimizer::Symbol     # Тип оптимизатора (:adam, :lbfgs, :adamw)
-    learning_rate::Float64 # Скорость обучения
+    learning_rate::Float32 # Скорость обучения
     max_iterations::Int   # Максимальное количество итераций
     log_frequency::Int    # Частота логирования
     use_tensorboard::Bool # Использовать ли TensorBoard
     log_directory::String # Директория для логов
     
-    function OptimizationConfig(; optimizer=:adam, learning_rate=0.001, max_iterations=3000, 
-                               log_frequency=50, use_tensorboard=true, log_directory="logs/inverse_npde_exp")
-        return new(Symbol(optimizer), learning_rate, max_iterations, log_frequency, use_tensorboard, log_directory)
+    # === НОВОЕ: Параметры трёхэтапной оптимизации ===
+    three_stage_optimization::Bool  # Включить трёхэтапную оптимизацию
+    adam1_lr::Float32              # LR для первого Adam этапа
+    adam2_lr::Float32              # LR для второго Adam этапа
+    adam1_ratio::Float32           # Доля итераций для первого Adam (0.2)
+    lbfgs_ratio::Float32           # Доля итераций для LBFGS (0.1)
+    adam2_ratio::Float32           # Доля итераций для второго Adam (0.7)
+    scheduler_type::Symbol         # Тип scheduler: :cosine, :warmup_cosine, :step
+    scheduler_warmup::Int          # Количество warmup итераций
+    
+    function OptimizationConfig(; optimizer=:adam, learning_rate=0.001, max_iterations=3000,
+                               log_frequency=50, use_tensorboard=true, log_directory="logs/inverse_npde_exp",
+                               # === НОВОЕ: Параметры трёхэтапной оптимизации ===
+                               three_stage_optimization=false,  # По умолчанию отключено
+                               adam1_lr=0.01,                   # LR для первого Adam этапа
+                               adam2_lr=0.001,                  # LR для второго Adam этапа
+                               adam1_ratio=0.2,                 # 20% итераций для первого Adam
+                               lbfgs_ratio=0.1,                 # 10% итераций для LBFGS
+                               adam2_ratio=0.7,                 # 70% итераций для второго Adam
+                               scheduler_type=:cosine,          # Тип scheduler
+                               scheduler_warmup=0               # Warmup итерации
+                               )
+        return new(Symbol(optimizer), learning_rate, max_iterations, log_frequency, use_tensorboard, log_directory,
+                   three_stage_optimization, adam1_lr, adam2_lr, adam1_ratio, lbfgs_ratio, adam2_ratio, scheduler_type, scheduler_warmup)
     end
 end
 
 # Структура конфигурации функции потерь
-struct LossFunctionConfig
-    lambda_pde::Float64                           # Вес потерь PDE
-    lambda_bc::Float64                           # Вес потерь граничных условий
-    lambda_data_init::Float64                    # Начальное значение веса данных
-    lambda_min::Union{Float64, Nothing}          # Минимальное значение lambda_data
-    lambda_max::Union{Float64, Nothing}          # Максимальное значение lambda_data
+mutable struct LossFunctionConfig
+    lambda_pde::Float32                           # Вес потерь PDE
+    lambda_bc::Float32                           # Вес потерь граничных условий
+    lambda_data_init::Float32                    # Начальное значение веса данных
+    lambda_min::Union{Float32, Nothing}          # Минимальное значение lambda_data
+    lambda_max::Union{Float32, Nothing}          # Максимальное значение lambda_data
     measured_points::Vector                      # Исходные измеренные точки (для совместимости)
     measured_points_coords::Matrix{Float32}      # Батчированные координаты [4, N]
     measured_points_values::Vector{Float32}      # Батчированные значения [N]
@@ -224,48 +438,67 @@ struct LossFunctionConfig
     deriv_coords::Matrix{Float32}                # [x,y,z,t_mid] координаты для оценки производных [4, num_sensors*(num_time_steps-1)]
     lambda_schedule_type::Symbol                  # :improvement (default)
     lambda_schedule::Dict{String,Any}             # Dict with scheduling params
-    lambda_time::Float64                          # Вес для временной производной
+    lambda_time::Float32                          # Вес для временной производной
     
     # Поля для регуляризации энергии поля (L_field)
-    lambda_field::Float64                        # Вес регуляризации поля (default: 1.0)
-    field_energy_scale::Float64                  # Масштаб энергии для экспоненциального лосса (default: 3.0)
+    lambda_field::Float32                        # Вес регуляризации поля (default: 1.0)
+    field_energy_scale::Float32                  # Масштаб энергии для экспоненциального лосса (default: 3.0)
     num_field_time_samples::Int                  # Количество временных срезов для интегрирования энергии поля
-    inner_domain::Tuple{Vector{Float64}, Vector{Float64}}  # (lb, ub) для внутренней области интегрирования (x, y, z)
+    inner_domain::Tuple{Vector{Float32}, Vector{Float32}}  # (lb, ub) для внутренней области интегрирования (x, y, z)
     
     # Поля для адаптивного взвешивания (GradientScaleAdaptiveLoss)
     enable_adaptive_loss::Bool                    # Включить адаптивное взвешивание
     adaptive_loss_reweight_every::Int             # Как часто пересчитывать веса (в итерациях)
-    adaptive_weight_inertia::Float64              # Инерция для экспоненциального сглаживания весов
+    adaptive_weight_inertia::Float32              # Инерция для экспоненциального сглаживания весов
     
     # refs для хранения промежуточных значений лосса (избегаем пересчёта в callback)
     field_loss_ref::Ref{NamedTuple}               # Ref для E_field, E_field_normalized, L_field
     data_loss_ref::Ref{NamedTuple}                # Ref для mse, deriv_loss, total
-    alpha_data_constraint::Float64
-    function LossFunctionConfig(; 
-        lambda_pde::Float64=1.0, 
-        lambda_bc::Float64=1.0, 
-        lambda_data_init::Float64=1.0,
-        lambda_min::Union{Float64, Nothing}=nothing, 
-        lambda_max::Union{Float64, Nothing}=nothing,
+    alpha_data_constraint::Float32
+    
+    # === НОВОЕ: Поля для Total Variation (TV) регуляризации на заряды (rho) ===
+    lambda_tv::Float32                             # Вес TV регуляризации (default: 0.1)
+    tv_epsilon::Float32                           # Параметр сглаживания для TV (default: 1e-5)
+    tv_scale::Float32                              # Масштаб для экспоненциального TV лосса (default: 0.1)
+    num_tv_time_samples::Int                       # Количество временных срезов для TV интегрирования
+    tv_loss_ref::Ref{NamedTuple}                   # Ref для TV loss
+    
+    # === НОВОЕ: Поля для L1 регуляризации на веса ===
+    lambda_l1::Float32                            # Вес L1 регуляризации (default: 0.001)
+    l1_loss_ref::Ref{NamedTuple}                   # Ref для L1 loss
+    
+    function LossFunctionConfig(;
+        lambda_pde::Float32=1.0f0,
+        lambda_bc::Float32=1.0f0,
+        lambda_data_init::Float32=1.0f0,
+        lambda_min::Union{Float32, Nothing}=nothing,
+        lambda_max::Union{Float32, Nothing}=nothing,
         measured_points::Vector=Vector{Any}[],
         lambda_schedule_type::Symbol = :improvement,
         lambda_schedule::Dict{String,Any} = Dict(),
-        lambda_time::Float64=1.0,
+        lambda_time::Float32=1.0f0,
         # Параметры регуляризации энергии поля
-        lambda_field::Float64=1.0,
-        field_energy_scale::Float64=3.0,
+        lambda_field::Float32=1.0f0,
+        field_energy_scale::Float32=3.0f0,
         num_field_time_samples::Int=5,  # Количество временных срезов для интегрирования
         # Параметры домена - теперь напрямую для автоматического вычисления inner_domain
-        x_range::Vector{Float64}=[-10.0, 10.0],
-        y_range::Vector{Float64}=[-10.0, 10.0],
-        z_range::Vector{Float64}=[-10.0, 10.0],
-        t_range::Vector{Float64}=[0.0, 1.0],
-        pml_thickness_ratio::Float64=0.1,  # Толщина PML слоя
+        x_range::Vector{Float32}=[-10.0f0, 10.0f0],
+        y_range::Vector{Float32}=[-10.0f0, 10.0f0],
+        z_range::Vector{Float32}=[-10.0f0, 10.0f0],
+        t_range::Vector{Float32}=[0.0f0, 1.0f0],
+        pml_thickness_ratio::Float32=0.1f0,  # Толщина PML слоя
         # Параметры адаптивного взвешивания (GradientScaleAdaptiveLoss)
         enable_adaptive_loss::Bool=false,  # По умолчанию отключено
         adaptive_loss_reweight_every::Int=100,  # Пересчитывать веса каждые 100 итераций
-        adaptive_weight_inertia::Float64=0.9,  # Инерция для сглаживания весов
-        alpha_data_constraint::Float64=2.0  # Масштаб для превращения data_loss в ограничение
+        adaptive_weight_inertia::Float32=0.9f0,  # Инерция для сглаживания весов
+        alpha_data_constraint::Float32=2.0f0,  # Масштаб для превращения data_loss в ограничение
+        # === НОВОЕ: Параметры TV регуляризации на заряды (rho) ===
+        lambda_tv::Float32=0.1f0,  # Вес TV регуляризации
+        tv_epsilon::Float32=1e-5f0,  # Параметр сглаживания для TV
+        tv_scale::Float32=0.1f0,  # Масштаб для экспоненциального TV лосса
+        num_tv_time_samples::Int=5,  # Количество временных срезов для TV
+        # === НОВОЕ: Параметры L1 регуляризации на веса ===
+        lambda_l1::Float32=0.001f0  # Вес L1 регуляризации
     )
         if lambda_min !== nothing && lambda_max !== nothing && lambda_min >= lambda_max
             throw(ArgumentError("lambda_min должно быть меньше lambda_max"))
@@ -303,7 +536,7 @@ struct LossFunctionConfig
             pos = all_data_cpu[1:3, :]
             uniq_map = Dict{Tuple{Float32,Float32,Float32}, Int}()
             sensors = Tuple{Float32,Float32,Float32}[]
-            for j in 1:size(pos, 2)
+            for j in axes(pos, 2)
                 key = (Float32(pos[1, j]), Float32(pos[2, j]), Float32(pos[3, j]))
                 if !haskey(uniq_map, key)
                     uniq_map[key] = length(sensors) + 1
@@ -338,14 +571,14 @@ struct LossFunctionConfig
                 # на неравномерной сетке (Dierckx.jl) и вычисляем производную сплайна
                 if length(t_unique) > 1
                     # средние точки интервалов, где будет оцениваться производная
-                    t_mid = Float64.((Float32.(t_unique[1:end-1]) .+ Float32.(t_unique[2:end])) ./ 2f0)
+                    t_mid = Float32.((Float32.(t_unique[1:end-1]) .+ Float32.(t_unique[2:end])) ./ 2f0)
                     t_mid_for_deriv = Float32.(t_mid)
 
                     # Создаем матрицу производных (num_sensors, num_time_steps-1)
                     deriv_mat = zeros(Float32, num_sensors, num_time_steps - 1)
-                    x = Float64.(t_unique)
+                    x = Float32.(t_unique)
                     for si in 1:num_sensors
-                        y = Float64.(measured_mat[si, :])
+                        y = Float32.(measured_mat[si, :])
                         # Построение кубического сплайна на неравномерной сетке
                         s = Dierckx.Spline1D(x, y, k=3)
                         # Оценка первой производной в средних точках интервалов
@@ -388,34 +621,16 @@ struct LossFunctionConfig
             end
         end
 
-        inner_domain = (Float64[], Float64[])  # По умолчанию: пустой домен
-        
-        # Автоматически вычисляем inner_domain из x_range, y_range, z_range и pml_thickness_ratio
-        x_min, x_max = x_range[1], x_range[2]
-        y_min, y_max = y_range[1], y_range[2]
-        z_min, z_max = z_range[1], z_range[2]
-        
-        # Толщина PML слоя
-        Dx = (x_max - x_min) * pml_thickness_ratio
-        Dy = (y_max - y_min) * pml_thickness_ratio
-        Dz = (z_max - z_min) * pml_thickness_ratio
-        
-        # Внутренняя область
-        x_inner_min = x_min + Dx
-        x_inner_max = x_max - Dx
-        y_inner_min = y_min + Dy
-        y_inner_max = y_max - Dy
-        z_inner_min = z_min + Dz
-        z_inner_max = z_max - Dz
-        
-        # Сохраняем границы внутренней области для IntegralProblem (только x, y, z - без времени)
-        inner_domain = ([x_inner_min, y_inner_min, z_inner_min],
-                      [x_inner_max, y_inner_max, z_inner_max])
+        inner_domain = calc_inner_domain(x_range, y_range, z_range, pml_thickness_ratio)
 
         # Инициализируем Refs для хранения промежуточных значений лосса
         # Это позволяет избежать пересчёта в callback
         field_loss_ref = Ref{NamedTuple}((E_field=0.0f0, E_field_normalized=0.0f0, L_field=0.0f0))
         data_loss_ref = Ref{NamedTuple}((mse=0.0f0, deriv=0.0f0, total=0.0f0))
+        
+        # === НОВОЕ: Инициализация refs для TV и L1 ===
+        tv_loss_ref = Ref{NamedTuple}((TV=0.0f0, L_tv=0.0f0))
+        l1_loss_ref = Ref{NamedTuple}((l1=0.0f0,))
 
         return new(lambda_pde, lambda_bc, lambda_data_init, lambda_min, lambda_max,
                    measured_points, coords, values, measured_time, n_points,
@@ -423,12 +638,49 @@ struct LossFunctionConfig
                     lambda_schedule_type, lambda_schedule, lambda_time,
                     lambda_field, field_energy_scale, num_field_time_samples, inner_domain,
                     enable_adaptive_loss, adaptive_loss_reweight_every, adaptive_weight_inertia,
-                    field_loss_ref, data_loss_ref, alpha_data_constraint)
+                    field_loss_ref, data_loss_ref, alpha_data_constraint,
+                    # === НОВОЕ: Новые поля ===
+                    lambda_tv, tv_epsilon, tv_scale, num_tv_time_samples, tv_loss_ref,
+                    lambda_l1, l1_loss_ref)
     end
 end
 
+function calc_inner_domain(
+    x_range::Vector{Float32},
+    y_range::Vector{Float32},
+    z_range::Vector{Float32},
+    pml_thickness_ratio::Float32
+    )
+    
+    # Автоматически вычисляем inner_domain из x_range, y_range, z_range и pml_thickness_ratio
+    x_min, x_max = x_range[1], x_range[2]
+    y_min, y_max = y_range[1], y_range[2]
+    z_min, z_max = z_range[1], z_range[2]
+    
+    # Толщина PML слоя
+    Dx = (x_max - x_min) * pml_thickness_ratio
+    Dy = (y_max - y_min) * pml_thickness_ratio
+    Dz = (z_max - z_min) * pml_thickness_ratio
+    
+    # Внутренняя область
+    x_inner_min = x_min + Dx
+    x_inner_max = x_max - Dx
+    y_inner_min = y_min + Dy
+    y_inner_max = y_max - Dy
+    z_inner_min = z_min + Dz
+    z_inner_max = z_max - Dz
+    
+    # Сохраняем границы внутренней области для IntegralProblem (только x, y, z - без времени)
+    return ([x_inner_min, y_inner_min, z_inner_min],
+                    [x_inner_max, y_inner_max, z_inner_max])
+end
+function set_inner_domain!(loss_config::LossFunctionConfig, x_range::Vector{Float32}, y_range::Vector{Float32}, z_range::Vector{Float32}, pml_thickness_ratio::Float32)
+    inner_lb, inner_ub = calc_inner_domain(x_range, y_range, z_range,pml_thickness_ratio)
+    loss_config.inner_domain = (inner_lb, inner_ub)
+end
 
-function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64})
+
+function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float32})
     n_points = loss_config.n_measured_points
     coords_batch = loss_config.measured_points_coords
     values_batch = loss_config.measured_points_values
@@ -446,19 +698,34 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
     inner_domain = loss_config.inner_domain
     num_field_time_samples = loss_config.num_field_time_samples
     
+    # === НОВОЕ: Параметры для TV и L1 регуляризации ===
+    lambda_tv = loss_config.lambda_tv
+    tv_epsilon = loss_config.tv_epsilon
+    tv_scale = loss_config.tv_scale  # Масштаб для TV лосса
+    num_tv_time_samples = loss_config.num_tv_time_samples
+    lambda_l1 = loss_config.lambda_l1
+    
     # refs для хранения значений лосса
     field_loss_ref = loss_config.field_loss_ref
     data_loss_ref = loss_config.data_loss_ref
+    tv_loss_ref = loss_config.tv_loss_ref
+    l1_loss_ref = loss_config.l1_loss_ref
     
     # Проверяем, нужно ли вычислять field loss (домен не пустой)
     compute_field = lambda_field > 0 && length(inner_domain[1]) > 0
+    
+    # === НОВОЕ: Проверяем, нужно ли вычислять TV loss ===
+    compute_tv = lambda_tv > 0 && length(inner_domain[1]) > 0 && length(measured_time) > 1
+    
+    # === НОВОЕ: L1 регуляризация вычисляется всегда (если lambda_l1 > 0) ===
+    compute_l1 = lambda_l1 > 0
     
     function additional_loss(phi_pred_fun, θ, p_)
         # Получаем GPU устройство
         dev = Lux.gpu_device()
         
         # Переносим батчированные данные на GPU
-        coords_gpu = coords_batch |> dev
+        coords_gpu = Float32.(coords_batch) |> dev
         values_gpu = values_batch |> dev
         θ_gpu = θ |> dev
         
@@ -481,12 +748,20 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
         #Превращаем data_loss в ограничение
          # Это превращает data_loss в мягкое ограничение, которое растёт экспоненциально при увеличении data_loss, но сохраняет градиенты даже при больших значениях. 
         # Это позволяет сохранять градиенты даже при больших значениях data_loss, так как экспонента будет расти, но градиент будет сохраняться.
-        total = deriv_loss + lambda_time * deriv_loss
-        data_constraint = total + alpha_data_constraint * (total^2)
-        result = total * lambda_detached
+        total = data_loss_computed + lambda_time * deriv_loss
+        #data_constraint = total + alpha_data_constraint * (total^2)
+        data_constraint = total + alpha_data_constraint * total^2  # Превращаем в экспоненциальное ограничение, которое растёт при увеличении total
+        result = data_constraint * lambda_detached
         
         # Записываем data loss в ref для callback (без пересчёта)
         data_loss_ref[] = (data_constr=Float32(data_constraint), data_mse=Float32(data_loss_computed), deriv=Float32(deriv_loss), total=Float32(total))
+        
+        # === НОВОЕ: L1 регуляризация на веса ===
+        if compute_l1
+            l1_result = compute_l1_regularization(θ, Float32(lambda_l1))
+            l1_loss_ref[] = (l1=Float32(l1_result.l1), L_l1=Float32(l1_result.L_l1))
+            result = result + l1_result.L_l1
+        end
         
         # === ДОБАВЛЕНО: Регуляризация энергии поля через интеграл ===
         if compute_field
@@ -530,6 +805,31 @@ function create_additional_loss(loss_config::LossFunctionConfig, lambda_data_ref
                 
                 # Добавляем к общему результату с весом lambda_field
                 result = result + lambda_field * L_field
+            end
+        end
+        
+        # === НОВОЕ: TV регуляризация на заряды (rho) ===
+        if compute_tv
+            inner_lb, inner_ub = loss_config.inner_domain
+            
+            if length(inner_lb) == 3 && length(inner_ub) == 3
+                tv_result = compute_tv_regularization(
+                    phi_pred_fun,
+                    θ_gpu,
+                    measured_time,
+                    inner_lb,
+                    inner_ub,
+                    tv_epsilon,
+                    num_tv_time_samples,
+                    1000  # N_mc
+                )
+                
+                # Записываем TV loss в ref для callback
+                tv_loss_ref[] = (TV=Float32(tv_result.TV), 
+                               L_tv=Float32(tv_result.L_tv))
+                
+                # Добавляем к общему результату
+                result = result + Zygote.dropgrad(lambda_tv) * tv_result.L_tv
             end
         end
 
@@ -604,7 +904,7 @@ function derivative_loss(phi_pred_fun, θ, coords_gpu, values_gpu, n_points,
     # Вместо использования конечных разностей на граничных точках,
     # используем сеть для вычисления производных в средних точках интервалов
     if size(deriv_coords, 2) > 0
-        deriv_coords_gpu = deriv_coords |> dev
+        deriv_coords_gpu = Float32.(deriv_coords) |> dev
         deriv_gpu = Float32.(deriv_meas) |> dev
         
         # Оцениваем сеть в точках t_mid
@@ -644,7 +944,7 @@ end
 """
 function create_discretization(chain, ps, loss_config::LossFunctionConfig, 
                               opt_config::OptimizationConfig, domain_config,
-                              lambda_data_ref::Ref{Float64}=Ref{Float64}(loss_config.lambda_data_init))
+                              lambda_data_ref::Ref{Float32}=Ref{Float32}(loss_config.lambda_data_init))
     
     # Создаем стратегию обучения
     strategy = QuasiRandomTraining(domain_config["num_points"])
@@ -699,8 +999,8 @@ end
 
 """
     create_optimization_callback(opt_config::OptimizationConfig, discretization, pde_system, bcs, domains,
-                                 loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64},
-                                 data_loss_raw_func::Function)
+                                 loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float32},
+                                 data_loss_raw_func::Function; scheduler_fn=nothing, initial_iter::Int=0, logger=nothing)
 
 Создает callback функцию для мониторинга обучения с адаптивным балансом lambda_data.
 
@@ -713,25 +1013,32 @@ end
 - `loss_config`: Конфигурация функции потерь
 - `lambda_data_ref`: Ссылка на текущее значение веса данных
 - `data_loss_raw_func`: Функция для вычисления "сырого" data loss без веса
+- `scheduler_fn`: Функция планировщика learning rate (t -> lr), опционально
+- `initial_iter`: Начальный номер итерации (для многоэтапной оптимизации), по умолчанию 0
+- `logger`: Логгер TensorBoard (если не передан и use_tensorboard=true, создаётся новый)
 
 # Адаптивный баланс
 # Использует improvement-based планировщик: увеличивает λ при стагнации data loss.
+
+# Learning Rate Scheduling
+# Если передан `scheduler_fn`, callback обновляет learning rate через Optimisers.adjust!.
 """
 function create_optimization_callback(opt_config::OptimizationConfig, discretization, pde_system, bcs, domains,
-                                      loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float64},
-                                      data_loss_raw_func::Function)
+                                      loss_config::LossFunctionConfig, lambda_data_ref::Ref{Float32},
+                                      data_loss_raw_func::Function; scheduler_fn=nothing, initial_iter::Int=0, logger=nothing)
     maxiters = opt_config.max_iterations
     
-    # Создаем логгер для TensorBoard
-    logger = opt_config.use_tensorboard ? 
-        TBLogger(opt_config.log_directory) : nothing
+    # Создаем логгер для TensorBoard только если не передан извне
+    if logger === nothing && opt_config.use_tensorboard
+        logger = TBLogger(opt_config.log_directory)
+    end
     
     # Получаем функции потерь
     sym_prob = symbolic_discretize(pde_system, discretization)
     pde_inner_loss_functions = sym_prob.loss_functions.pde_loss_functions
     bcs_inner_loss_functions = sym_prob.loss_functions.bc_loss_functions
     
-    iter = 0
+    iter = initial_iter  # Начинаем с initial_iter для многоэтапной оптимизации
     pbar = ProgressBar(1:maxiters, printing_delay=1.)
 
     # Параметры для регуляризации энергии поля
@@ -740,6 +1047,12 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
     # refs для чтения значений лосса (заполняются в create_additional_loss)
     field_loss_ref = loss_config.field_loss_ref
     data_loss_ref = loss_config.data_loss_ref
+    tv_loss_ref = loss_config.tv_loss_ref
+    l1_loss_ref = loss_config.l1_loss_ref
+    
+    # Параметры для TV и L1
+    lambda_tv = loss_config.lambda_tv
+    lambda_l1 = loss_config.lambda_l1
     
     # State for improvement-based lambda scheduling
     # Initialized here so the closure can mutate them across iterations
@@ -757,8 +1070,22 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
     # field_loss_func НЕ используется - читаем из refs
     # field_loss_func = nothing
 
-    return function (p, l)
-        iter += 1
+    # === Scheduler support ===
+    # Счетчик итераций для scheduler (общий через этапы, начинается с initial_scheduler_iter)
+
+        # === Переменная для хранения текущего learning rate ===
+        current_lr_ref = Ref{Float32}(0.0f0)
+        
+        return function (p, l)
+        iter +=1
+        # === Обновление learning rate через scheduler ===
+        if scheduler_fn !== nothing
+            # Используем p.iter для отсчета scheduler (начинается с 0 на каждом этапе)
+            current_lr = scheduler_fn(p.iter)
+            Optimisers.adjust!(p.original, current_lr)
+            current_lr_ref[] = Float32(current_lr)
+        end
+        
         
         # Логируем общую потерю
         if logger !== nothing
@@ -845,11 +1172,24 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
             log_value(logger, "Params/lambda_action", lambda_action[]; step=iter)
             
             # Логируем energy field loss из ref (без пересчёта)
-            if field_loss_ref[] != nothing && haskey(field_loss_ref[], :L_field)
+            if field_loss_ref[] !== nothing && haskey(field_loss_ref[], :L_field)
                 log_value(logger, "Loss/E_field", field_loss_ref[].E_field; step=iter)
                 log_value(logger, "Loss/E_field_normalized", field_loss_ref[].E_field_normalized; step=iter)
                 log_value(logger, "Loss/L_field", field_loss_ref[].L_field; step=iter)
                 log_value(logger, "Loss/L_field_weighted", field_loss_ref[].L_field * lambda_field; step=iter)
+            end
+            
+            # === НОВОЕ: Логируем TV loss ===
+            if tv_loss_ref[] !== nothing && haskey(tv_loss_ref[], :L_tv)
+                log_value(logger, "Loss/TV", tv_loss_ref[].TV; step=iter)
+                log_value(logger, "Loss/L_tv", tv_loss_ref[].L_tv; step=iter)
+                log_value(logger, "Loss/L_tv_weighted", tv_loss_ref[].L_tv * lambda_tv; step=iter)
+            end
+            
+            # === НОВОЕ: Логируем L1 loss ===
+            if l1_loss_ref[] !== nothing && haskey(l1_loss_ref[], :l1)
+                log_value(logger, "Loss/L1", l1_loss_ref[].l1; step=iter)
+                log_value(logger, "Loss/L1_weighted", l1_loss_ref[].L_l1; step=iter)
             end
         end
         
@@ -857,7 +1197,7 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
         E_field_val = 0.0f0
         E_field_norm_val = 0.0f0
         L_field_val = 0.0f0
-        if field_loss_ref[] != nothing && haskey(field_loss_ref[], :L_field)
+        if field_loss_ref[] !== nothing && haskey(field_loss_ref[], :L_field)
             E_field_val = field_loss_ref[].E_field
             E_field_norm_val = field_loss_ref[].E_field_normalized
             L_field_val = field_loss_ref[].L_field
@@ -865,15 +1205,31 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
         
         # Обновляем прогресс бар - сначала продвигаем итератор, затем устанавливаем postfix
         ProgressBars.update(pbar)
-        set_postfix(pbar, 
-               Loss = round(l, sigdigits=3), 
-               PDE = round(L_pde, sigdigits=3), 
+        
+        # Читаем TV и L1 значения из refs
+        tv_val = 0.0f0
+        tv_norm_val = 0.0f0
+        l1_val = 0.0f0
+        if tv_loss_ref[] !== nothing && haskey(tv_loss_ref[], :L_tv)
+            tv_val = tv_loss_ref[].TV
+            tv_norm_val = tv_loss_ref[].L_tv
+        end
+        if l1_loss_ref[] !== nothing && haskey(l1_loss_ref[], :l1)
+            l1_val = l1_loss_ref[].l1
+        end
+        
+        set_postfix(pbar,
+               Loss = round(l, sigdigits=3),
+               PDE = round(L_pde, sigdigits=3),
                Data_const = round(L_data_raw, sigdigits=3),
                Data_mse = round(data_mse, sigdigits=3),
                Deriv = round(deriv_loss_val, sigdigits=3),
                E_fld = round(E_field_norm_val, sigdigits=3),
                L_fld = round(L_field_val, sigdigits=3),
-               λ = round(lambda_data_ref[], sigdigits=2))
+               TV = round(tv_norm_val, sigdigits=3),
+               L1 = round(l1_val, sigdigits=3),
+               λ = round(lambda_data_ref[], sigdigits=2),
+               LR = round(hasproperty(p.original, :rule) ? p.original.rule.eta : 0.0f0, sigdigits=2))
         
         return false  # Продолжаем оптимизацию
     end
@@ -957,7 +1313,7 @@ end
 
 Создает callback для сохранения истории потерь.
 """
-function create_loss_callback(opt_config::OptimizationConfig, logger, loss_history::Vector{Float64}=Float64[])
+function create_loss_callback(opt_config::OptimizationConfig, logger, loss_history::Vector{Float32}=Float32[])
     return function (p, l)
         push!(loss_history, l)
         
@@ -971,16 +1327,16 @@ function create_loss_callback(opt_config::OptimizationConfig, logger, loss_histo
 end
 
 """
-    create_early_stopping_patience(patience::Int, min_delta::Float64=1e-6)
+    create_early_stopping_patience(patience::Int, min_delta::Float32=1e-6)
 
 Создает callback для ранней остановки.
 """
-function create_early_stopping_patience(patience::Int, min_delta::Float64=1e-6)
+function create_early_stopping_patience(patience::Int, min_delta::Float32=Float32(1e-6))
     best_loss = Inf
     wait = 0
     
     # Используем ссылочные типы для сохранения состояния
-    state = Ref{Float64}(best_loss)
+    state = Ref{Float32}(best_loss)
     wait_ref = Ref{Int}(wait)
     
     return function (p, l)
