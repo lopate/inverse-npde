@@ -20,6 +20,7 @@ module NeuralNetwork
 
 using Lux, Random, ComponentArrays, CUDA
 using ..PDEDefinitions: PhysicalConstants
+using ..HeadConstraints: HeadConfig, head_indicator
 
 # Экспортируем основные функции
 export NeuralNetworkConfig, TemporalAwareNetworkConfig
@@ -27,6 +28,7 @@ export create_neural_network, create_temporal_aware_network
 export create_output_splitter, get_device_functions
 export initialize_parameters, initialize_temporal_aware_parameters
 export build_dense_chain, create_fourier_features
+export ConstrainedNeuralNetwork, create_constrained_neural_network, apply_head_constraint
 
 # Структура конфигурации нейронной сети
 struct NeuralNetworkConfig
@@ -637,6 +639,152 @@ function validate_config(config::TemporalAwareNetworkConfig)
     end
     
     return true
+end
+
+"""
+    create_constrained_neural_network(inner_network, head_config::HeadConfig; use_derivatives::Bool=true)
+
+Создаёт Lux слой-обёртку для нейронной сети с ограничением на плотность заряда ρ.
+
+Это Lux слой, который NeuralPDE корректно распознаёт без использования FromFluxAdaptor.
+
+Плотность заряда ρ ограничивается индикаторной функцией головы:
+    ρ_constrained = ρ * head_indicator(x, y, z, head_config)
+
+Это гарантирует, что ρ = 0 вне эллипсоида головы.
+
+Градиенты протекают напрямую через индикаторную функцию.
+
+Индексы выхода:
+- 1: φ (скалярный потенциал)
+- 2-4: A (векторный потенциал)
+- 5: ρ (плотность заряда) - ОГРАНИЧИВАЕТСЯ
+- 6-8: j (плотность тока) - НЕ ограничивается
+
+# Параметры:
+- `inner_network`: Внутренняя Lux нейросеть (например, @compact слой)
+- `head_config::HeadConfig`: Конфигурация головы для ограничения
+- `use_derivatives::Bool`: Использовать ли производные (влияет на размер выхода)
+
+# Возвращает:
+- Lux слой (через @compact макрос)
+"""
+function create_constrained_neural_network(inner_network, head_config::HeadConfig; use_derivatives::Bool=true)
+    # Сохраняем конфигурацию как константу для использования внутри замыкания
+    _head_config = head_config
+    
+    return @compact(
+        ;
+        inner_network=inner_network,
+        head_config=_head_config,
+        use_derivatives=use_derivatives
+    ) do x, p
+        # Получаем выход внутренней сети
+        output, st = inner_network(x, p)
+        
+        # Если ограничение отключено, возвращаем как есть
+        if !_head_config.enabled
+            return output, st
+        end
+        
+        # Определяем формат входа и извлекаем координаты через слайсирование
+        # NeuralPDE передаёт данные как (4, N) для батча из N точек
+        # Используем x[1:1], x[2:2], x[3:3] чтобы избежать скалярного индексирования
+        if ndims(x) == 1
+            # Одна точка: x имеет форму (4,)
+            # Используем [1:1] чтобы получить 1-элементный массив вместо скаляра
+            x_coord = x[1:1]
+            y_coord = x[2:2]
+            z_coord = x[3:3]
+        else
+            # Батч: x имеет форму (4, N)
+            x_coord = x[1, :]
+            y_coord = x[2, :]
+            z_coord = x[3, :]
+        end
+        
+        # Вычисляем индикатор - GPU-совместимая функция
+        indicator = head_indicator(x_coord, y_coord, z_coord, _head_config)
+        
+        # Применяем ограничение к ρ (индекс 5)
+        # Используем слайсирование вместо getindex для GPU совместимости
+        if ndims(output) == 1
+            # Одна точка: output имеет форму (8,)
+            # Используем [5:5] чтобы получить 1-элементный массив
+            rho = output[5:5]
+            rho_constrained = rho .* indicator
+            
+            # Собираем результат через vcat
+            # Используем [1:1] вместо [1] для избежания скалярного индексирования на GPU
+            output_constrained = vcat(
+                output[1:4],
+                rho_constrained[1:1],
+                output[6:8]
+            )
+            return output_constrained, st
+        else
+            # Батч: output имеет форму (8, N)
+            # Умножаем строку 5 (ρ) на индикатор - обе формы (N,)
+            rho_row = output[5, :]
+            rho_constrained = rho_row .* indicator
+            
+            # Собираем результат через vcat
+            output_constrained = vcat(
+                output[1:4, :],
+                reshape(rho_constrained, 1, :),
+                output[6:8, :]
+            )
+            return output_constrained, st
+        end
+    end
+end
+
+# Сохраняем обратную совместимость - type alias
+const ConstrainedNeuralNetwork = typeof(create_constrained_neural_network(
+    create_temporal_aware_network(TemporalAwareNetworkConfig()),
+    HeadConfig()
+))
+
+"""
+    apply_head_constraint(output, coords, head_config::HeadConfig)
+
+Применяет ограничение головы к выходу нейросети.
+
+Ограничение применяется только к ρ (индекс 5):
+    ρ_constrained = ρ * head_indicator(x, y, z, head_config)
+
+Градиенты протекают напрямую через индикаторную функцию.
+
+# Параметры:
+- `output`: Выход нейросети (вектор размера 8 или 24)
+- `coords`: Координаты точки (x, y, z) или матрица (3, N)
+- `head_config::HeadConfig`: Конфигурация головы
+
+# Возвращает:
+- Выход с ограничением на ρ
+"""
+function apply_head_constraint(output, coords, head_config::HeadConfig)
+    if !head_config.enabled
+        return output
+    end
+    
+    # Вычисляем индикатор
+    indicator = head_indicator(coords, head_config)
+    
+    # Применяем ограничение только к ρ (индекс 5)
+    # output[5] = ρ → ρ_constrained = ρ * indicator
+    output_constrained = similar(output)
+    output_constrained .= output
+    
+    if ndims(output) == 1
+        # Один выход: (8,) или (24,)
+        output_constrained[5] = output[5] * indicator
+    else
+        # Батч: (8, N) или (24, N)
+        output_constrained[5, :] = output[5, :] .* indicator
+    end
+    
+    return output_constrained
 end
 
 end # module

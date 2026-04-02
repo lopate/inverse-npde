@@ -369,4 +369,4 @@ function compute_alpha(pml_config::PMLConfig, x, y, z, domains)
     return alpha_x + alpha_y + alpha_z
 end
 
-end # module PML
+end  # module PML

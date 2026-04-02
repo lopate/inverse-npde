@@ -23,6 +23,7 @@ module InverseNpde
 # Подключаем PML модуль как подмодуль
 include("neural_pde_solver/PML.jl")
 include("neural_pde_solver/PDEDefinitions.jl")
+include("neural_pde_solver/HeadConstraints.jl")
 include("neural_pde_solver/NeuralNetwork.jl") 
 include("neural_pde_solver/Optimization.jl")
 include("neural_pde_solver/InverseProblem.jl")
@@ -33,22 +34,25 @@ include("neural_pde_solver/InverseProblem.jl")
 using .PDEDefinitions: PhysicalConstants
 using .NeuralNetwork: TemporalAwareNetworkConfig, NeuralNetworkConfig, create_neural_network, 
                       create_temporal_aware_network, initialize_parameters, 
-                      initialize_temporal_aware_parameters
+                      initialize_temporal_aware_parameters, ConstrainedNeuralNetwork, apply_head_constraint
 using .Optimization: OptimizationConfig, LossFunctionConfig, create_additional_loss, 
                    create_optimization_callback, setup_optimization, create_discretization,
                    validate_optimization_config, compute_field_energy_loss
 using .InverseProblem: DomainConfig, run_eeg_inverse_problem, get_available_devices, save_results, load_results
 using .PML: PMLConfig, default_pml_config
+using .HeadConstraints: HeadConfig, head_indicator, is_inside_ellipsoid, step_indicator
 
 # Экспортируем для использования вне модуля
 export PhysicalConstants
 export TemporalAwareNetworkConfig, NeuralNetworkConfig, create_neural_network,
-       create_temporal_aware_network, initialize_parameters, initialize_temporal_aware_parameters
+       create_temporal_aware_network, initialize_parameters, initialize_temporal_aware_parameters,
+       ConstrainedNeuralNetwork, apply_head_constraint
 export OptimizationConfig, LossFunctionConfig, create_additional_loss, 
        create_optimization_callback, setup_optimization, create_discretization,
        validate_optimization_config, compute_field_energy_loss
 export DomainConfig, run_eeg_inverse_problem, get_available_devices
 export PMLConfig, default_pml_config
+export HeadConfig, head_indicator, is_inside_ellipsoid, step_indicator
 export save_results, load_results
 
 end # module

@@ -38,11 +38,13 @@ using ..PDEDefinitions
 using ..NeuralNetwork
 using ..Optimization
 using ..PML
+using ..HeadConstraints
 
 using ..PDEDefinitions: PhysicalConstants, create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func 
-using ..NeuralNetwork: NeuralNetworkConfig, create_neural_network, initialize_parameters, validate_config
+using ..NeuralNetwork: NeuralNetworkConfig, create_neural_network, initialize_parameters, validate_config, create_constrained_neural_network, apply_head_constraint
 using ..Optimization: OptimizationConfig, LossFunctionConfig, set_inner_domain!, validate_optimization_config, create_discretization, create_optimization_callback, data_loss, derivative_loss, setup_optimization, solve, cosine_annealing_lr, warmup_cosine_lr
 using ..PDEDefinitions: create_variables, create_domains, create_pde_system, create_boundary_conditions, generate_measured_points, analytic_sol_func, PhysicalConstants
+using ..HeadConstraints: HeadConfig
 
 """
     normalize_measured_points(measured_points)
@@ -122,13 +124,14 @@ function create_complete_setup(; measured_points, nn_config::Union{NeuralNetwork
                                    "t_range" => [0.0f0, 1.0f0],
                                    "num_points" => 100
                                ),
-                               pml_config::PMLConfig=PMLConfig())
+                               pml_config::PMLConfig=PMLConfig(),
+                               head_config::Union{HeadConfig, Nothing}=nothing)
     
     # Делегируем на специализированные приватные функции в зависимости от типа конфигурации
     if nn_config isa NeuralNetworkConfig
-        return _create_complete_setup_standard(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
+        return _create_complete_setup_standard(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config, head_config)
     else
-        return _create_complete_setup_temporal(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
+        return _create_complete_setup_temporal(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config, head_config)
     end
 end
 
@@ -141,7 +144,8 @@ function _create_complete_setup_standard(; measured_points, nn_config::NeuralNet
                                opt_config::OptimizationConfig,
                                loss_config::LossFunctionConfig,
                                domain_config::Dict{String, Any},
-                               pml_config::PMLConfig)
+                               pml_config::PMLConfig,
+                               head_config::Union{HeadConfig, Nothing}=nothing)
     
     # Нормируем измеренные точки
     normalized_points, norm_factor = normalize_measured_points(measured_points)
@@ -185,12 +189,20 @@ function _create_complete_setup_standard(; measured_points, nn_config::NeuralNet
     set_inner_domain!(loss_config, domain_config["x_range"], domain_config["y_range"], domain_config["z_range"], pml_config.pml_thickness_ratio)
     
     # Создаем нейронную сеть
-    chain = create_neural_network(nn_config_updated)
-    ps = initialize_parameters(chain, Random.default_rng(), nn_config_updated.use_gpu)
+    base_chain = create_neural_network(nn_config_updated)
+    ps = initialize_parameters(base_chain, Random.default_rng(), nn_config_updated.use_gpu)
+    
+    # Применяем ограничение на голову, если указано
+    if head_config !== nothing
+        println("✓ Применяем ограничение плотности заряда (HeadConstraints)")
+        chain = create_constrained_neural_network(base_chain, head_config)
+    else
+        chain = base_chain
+    end
     
     return (chain=chain, ps=ps, constants=constants, variables=variables,
             domains=domains, pde_system=pde_system, bcs=bcs, 
-            measured_points=normalized_points, configs=(nn_config=nn_config_updated, opt_config=opt_config, loss_config=loss_config, domain_config=domain_config, pml_config=pml_config),
+            measured_points=normalized_points, configs=(nn_config=nn_config_updated, opt_config=opt_config, loss_config=loss_config, domain_config=domain_config, pml_config=pml_config, head_config=head_config),
             norm_factor=norm_factor)  # Добавляем норму в результат
 end
 
@@ -205,7 +217,8 @@ function _create_complete_setup_temporal(; measured_points, nn_config::TemporalA
                                opt_config::OptimizationConfig,
                                loss_config::LossFunctionConfig,
                                domain_config::Dict{String, Any},
-                               pml_config::PMLConfig)
+                               pml_config::PMLConfig,
+                               head_config::Union{HeadConfig, Nothing}=nothing)
     
     # Нормируем измеренные точки
     normalized_points, norm_factor = normalize_measured_points(measured_points)
@@ -241,12 +254,20 @@ function _create_complete_setup_temporal(; measured_points, nn_config::TemporalA
     set_inner_domain!(loss_config, domain_config["x_range"], domain_config["y_range"], domain_config["z_range"], pml_config.pml_thickness_ratio)
     
     # Создаем Temporal-Aware нейронную сеть
-    chain = create_temporal_aware_network(nn_config)
-    ps = initialize_temporal_aware_parameters(chain, Random.default_rng(); use_gpu=nn_config.use_gpu)
+    base_chain = create_temporal_aware_network(nn_config)
+    ps = initialize_temporal_aware_parameters(base_chain, Random.default_rng(); use_gpu=nn_config.use_gpu)
+    
+    # Применяем ограничение на голову, если указано
+    if head_config !== nothing
+        println("✓ Применяем ограничение плотности заряда (HeadConstraints)")
+        chain = create_constrained_neural_network(base_chain, head_config)
+    else
+        chain = base_chain
+    end
     
     return (chain=chain, ps=ps, constants=constants, variables=variables,
             domains=domains, pde_system=pde_system, bcs=bcs, 
-            measured_points=normalized_points, configs=(nn_config=nn_config, opt_config=opt_config, loss_config=loss_config, domain_config=domain_config, pml_config=pml_config),
+            measured_points=normalized_points, configs=(nn_config=nn_config, opt_config=opt_config, loss_config=loss_config, domain_config=domain_config, pml_config=pml_config, head_config=head_config),
             norm_factor=norm_factor)
 
 end
@@ -266,6 +287,7 @@ function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetwor
                                     "t_range" => [0.0f0, 1.0f0]
                                 ),
                                 pml_config::PMLConfig=PMLConfig(),
+                                head_config::Union{HeadConfig, Nothing}=nothing
                                 )
     domain_config= Dict{String, Any}(domain_config)
     println("🚀 Запуск эксперимента обратной задачи ЭЭГ...")
@@ -279,8 +301,16 @@ function run_eeg_inverse_problem(;measured_points, nn_config::Union{NeuralNetwor
         println("⚠️ PML отключён")
     end
     
+    if head_config !== nothing
+        println("✅ Ограничение плотности заряда включено (HeadConstraints)")
+        println("   Эллипсоид: rx=$(head_config.rx), ry=$(head_config.ry), rz=$(head_config.rz)")
+        println("   Центр: ($(head_config.cx), $(head_config.cy), $(head_config.cz))")
+    else
+        println("⚠️ Ограничение плотности заряда отключено")
+    end
+    
     # Создаем полную настройку
-    setup = create_complete_setup(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config)
+    setup = create_complete_setup(; measured_points, nn_config, opt_config, loss_config, domain_config, pml_config, head_config)
     
     println("✓ Настройка создана")
     

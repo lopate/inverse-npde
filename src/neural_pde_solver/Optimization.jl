@@ -28,7 +28,8 @@ using ChainRulesCore
 # Разрешаем скалярное индексирование для обхода проблем с GPU массивами
 allowscalar(true)
 using ..PDEDefinitions: PhysicalConstants
-using ..NeuralNetwork: NeuralNetworkConfig
+using ..NeuralNetwork: NeuralNetworkConfig, create_constrained_neural_network
+using ..HeadConstraints: HeadConfig, head_indicator
 
 # Экспортируем основные функции
 export OptimizationConfig, LossFunctionConfig, set_inner_domain!
@@ -38,6 +39,7 @@ export log_training_progress, validate_optimization_config
 export mc_integral_gpu, compute_field_energy_loss
 export data_loss, derivative_loss
 export compute_tv_regularization, compute_l1_regularization, cosine_annealing_lr, warmup_cosine_lr
+export HeadConfig, head_indicator
 
 """
     cosine_annealing_lr(base_lr::Float32, t::Int, T_max::Int)::Float32
