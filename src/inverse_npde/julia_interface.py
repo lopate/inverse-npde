@@ -297,7 +297,7 @@ class EEGInverseSolver:
         return {
             "input_dim": 4,  # x, y, z, t
             "hidden_layers": [32, 32],  # Скрытые слои
-            "output_dim": 8,  # φ, Ax, Ay, Az, ρ, jx, jy, jz
+            "output_dim": 7,  # φ, Ax, Ay, Az, Px, Py, Pz
             "activation": "σ",  # sigmoid activation
             "use_gpu": True,  # Использовать GPU если доступен
         }
@@ -426,7 +426,7 @@ class EEGInverseSolver:
             neural_config_jl = jl.seval(f"""
                 NeuralNetworkConfig(; input_dim={nn_config.get("input_dim", 4)}, 
                                        hidden_layers={hidden_layers_str},
-                                       output_dim={nn_config.get("output_dim", 8)},
+                                       output_dim={nn_config.get("output_dim", 7)},
                                        activation=Symbol("{nn_config.get("activation", "σ")}"),
                                        use_gpu={str(nn_config.get("use_gpu", True)).lower()})
             """)
@@ -960,7 +960,7 @@ def create_gpu_solver() -> EEGInverseSolver:
         neural_config={
             "input_dim": 4,
             "hidden_layers": [64, 64, 32],  # Более глубокая сеть
-            "output_dim": 8,
+            "output_dim": 7,  # φ, Ax, Ay, Az, Px, Py, Pz
             "activation": "relu",  # Быстрая активация
             "use_gpu": True,
         },
@@ -984,7 +984,7 @@ def create_fast_solver() -> EEGInverseSolver:
         neural_config={
             "input_dim": 4,
             "hidden_layers": [16, 16],  # Меньшая сеть
-            "output_dim": 8,
+            "output_dim": 7,  # φ, Ax, Ay, Az, Px, Py, Pz
             "activation": "σ",
             "use_gpu": False,  # CPU для стабильности
         },

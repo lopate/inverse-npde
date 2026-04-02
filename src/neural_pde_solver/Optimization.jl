@@ -23,7 +23,7 @@ using Printf
 using Zygote
 using Statistics
 using Dierckx
-using ChainRulesCore
+using ChainRulesCore: ignore_derivatives
 
 # Разрешаем скалярное индексирование для обхода проблем с GPU массивами
 allowscalar(true)
@@ -40,6 +40,49 @@ export mc_integral_gpu, compute_field_energy_loss
 export data_loss, derivative_loss
 export compute_tv_regularization, compute_l1_regularization, cosine_annealing_lr, warmup_cosine_lr
 export HeadConfig, head_indicator
+
+"""
+    mc_integral_gpu(f_batch, θ, lb, ub, N)
+
+Простой метод Монте-Карло на GPU для вычисления интеграла с параметрами нейросети.
+Генерирует N случайных точек в гиперкубе [0,1]^d и масштабирует их в домен [lb, ub].
+
+Использует ignore_derivatives() для исключения CUDA.rand из AD графа Zygote.
+
+# Аргументы
+- `f_batch`: Функция, принимающая матрицу [d, N] и параметры θ, возвращающая вектор размера N
+- `θ`: Параметры нейросети
+- `lb`: Нижние границы домена (вектор размера d)
+- `ub`: Верхние границы домена (вектор размера d)  
+- `N`: Количество точек для семплирования
+
+# Возвращает
+- Приближение интеграла (скаляр)
+"""
+function mc_integral_gpu(f_batch, θ, lb::Vector, ub::Vector, N::Int)
+    d = length(lb)
+    dev = Lux.gpu_device()
+    
+    # Генерируем случайные точки в [0,1]^d на GPU
+    # Используем ignore_derivatives() для исключения из AD графа Zygote
+    X = ignore_derivatives() do
+        CUDA.rand(Float32, d, N)
+    end
+    
+    # Масштабируем в домен [lb, ub]
+    # Явно переносим на GPU - используем |> dev для переноса
+    scale_vec = (ub .- lb) |> dev
+    offset_vec = lb |> dev
+    X_scaled = offset_vec .+ X .* scale_vec
+    
+    # Применяем функцию-батч ко всем точкам сразу
+    # f_batch принимает [d, N] и θ, возвращает [N]
+    vals = f_batch(X_scaled, θ)
+    
+    # Вычисляем среднее и умножаем на объём домена
+    volume = prod(ub .- lb)
+    return mean(vals) * volume
+end
 
 """
     cosine_annealing_lr(base_lr::Float32, t::Int, T_max::Int)::Float32
@@ -90,49 +133,6 @@ function warmup_cosine_lr(base_lr::Float32, t::Int, T_max::Int, warmup_iters::In
 end
 
 """
-    mc_integral_gpu(f_batch, θ, lb, ub, N)
-
-Простой метод Монте-Карло на GPU для вычисления интеграла с параметрами нейросети.
-Генерирует N случайных точек в гиперкубе [0,1]^d и масштабирует их в домен [lb, ub].
-
-Использует ignore_derivatives() для исключения CUDA.rand из AD графа Zygote.
-
-# Аргументы
-- `f_batch`: Функция, принимающая матрицу [d, N] и параметры θ, возвращающая вектор размера N
-- `θ`: Параметры нейросети
-- `lb`: Нижние границы домена (вектор размера d)
-- `ub`: Верхние границы домена (вектор размера d)  
-- `N`: Количество точек для семплирования
-
-# Возвращает
-- Приближение интеграла (скаляр)
-"""
-function mc_integral_gpu(f_batch, θ, lb::Vector, ub::Vector, N::Int)
-    d = length(lb)
-    dev = Lux.gpu_device()
-    
-    # Генерируем случайные точки в [0,1]^d на GPU
-    # Используем ignore_derivatives() для исключения из AD графа Zygote
-    X = ignore_derivatives() do
-        CUDA.rand(Float32, d, N)
-    end
-    
-    # Масштабируем в домен [lb, ub]
-    # Явно переносим на GPU - используем |> dev для переноса
-    scale_vec = (ub .- lb) |> dev
-    offset_vec = lb |> dev
-    X_scaled = offset_vec .+ X .* scale_vec
-    
-    # Применяем функцию-батч ко всем точкам сразу
-    # f_batch принимает [d, N] и θ, возвращает [N]
-    vals = f_batch(X_scaled, θ)
-    
-    # Вычисляем среднее и умножаем на объём домена
-    volume = prod(ub .- lb)
-    return mean(vals) * volume
-end
-
-"""
     compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb, inner_ub, field_energy_scale, num_field_time_samples, N_mc)
 
 Вычисляет field energy loss с нормировкой на объём домена.
@@ -140,6 +140,8 @@ end
 Эта функция:
 1. Сама создаёт time_points на основе measured_time и num_field_time_samples
 2. Вычисляет интеграл энергии E_field = ∫ (ρ·φ + A·j) dV используя mc_integral_gpu
+   где ρ = -div P = -(∂Px/∂x + ∂Py/∂y + ∂Pz/∂z)
+         j = ∂P/∂t = (∂Px/∂t, ∂Py/∂t, ∂Pz/∂t)
 3. Нормирует на объём: E_field_normalized = E_field / volume
 4. Вычисляет L_field = exp(-E_field_normalized / field_energy_scale)
 
@@ -165,7 +167,6 @@ function compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb::Ve
                                    field_energy_scale::T, num_field_time_samples::Int=5, N_mc::Int=1000) where T <: Real
     dev = Lux.gpu_device()
     
-    # Сами создаём time_points на основе measured_time и num_field_time_samples
     if length(measured_time) < 2
         error("measured_time must contain at least 2 distinct time points")
     end
@@ -173,74 +174,100 @@ function compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb::Ve
     t_max = maximum(measured_time)
     time_points = collect(range(t_min, t_max, length=num_field_time_samples))
     
-    # Создаём обёртку которая принимает x_spatial и θ_inner - это работает с Zygote
-    # θ передаётся явно как аргумент, а не захватывается замыканием
     field_energy_mc = let times = time_points, n_times_val = length(time_points)
         function(x_spatial::AbstractArray, θ_inner)
             batch_size = size(x_spatial, 2)
             n_times = n_times_val
             
-            # Vectorized создание временной координаты - без цикла for!
-            # time_idx = [1,1,1,...,1, 2,2,2,...,2, ..., n_times] (batch_size раз для каждого времени)
-            # Используем repeat на CPU, затем переносим на GPU
             time_idx_cpu = repeat(1:n_times, inner=batch_size)
             time_idx_gpu = time_idx_cpu |> dev
             
-            # Создаём массив временных значений используя vectorized индексацию
-            # times - это Vector{Float32}, преобразуем в GPU массив
             times_gpu = Float32.(times) |> dev
-            # Индексируем вектор times по вектору индексов - полностью vectorized
             t_vals = ignore_derivatives() do
                 times_gpu[time_idx_gpu]
             end
             
-            # Создаём полный батч: [x,y,z,t] - используем vectorized reshape и broadcast
-            # x_spatial имеет размер [3, batch_size]
-            # Нужно повторить каждую пространственную точку n_times раз
             X_full = ignore_derivatives() do
-                # Повторяем пространственные координаты n_times раз
                 x_spatial_expanded = repeat(x_spatial, 1, n_times)
-                # Добавляем временную координату четвёртой строкой
                 CUDA.vcat(x_spatial_expanded, reshape(t_vals, 1, :))
             end
             
             θ_gpu = θ_inner |> dev
             pred = phi_pred_fun(X_full, θ_gpu)
             
-            # Определяем размерность выхода динамически
-            # pred имеет размер [output_dim, batch_size * n_times]
-            # Используем только первые 8 компонентов: φ, Ax, Ay, Az, ρ, jx, jy, jz
             output_dim = size(pred, 1)
-            n_components = min(8, output_dim)
+            n_components = min(7, output_dim)
             
-            # reshape для усреднения по времени (используем только первые 8 компонентов)
             phi = reshape(pred[1, :], n_times, batch_size)
             Ax = reshape(pred[2, :], n_times, batch_size)
             Ay = reshape(pred[3, :], n_times, batch_size)
             Az = reshape(pred[4, :], n_times, batch_size)
-            rho = reshape(pred[5, :], n_times, batch_size)
-            jx = reshape(pred[6, :], n_times, batch_size)
-            jy = reshape(pred[7, :], n_times, batch_size)
-            jz = reshape(pred[8, :], n_times, batch_size)
+            Px = reshape(pred[5, :], n_times, batch_size)
+            Py = reshape(pred[6, :], n_times, batch_size)
+            Pz = reshape(pred[7, :], n_times, batch_size)
             
-            # Энергия: ρ·φ + A·j
-            energy_per_time = rho .* phi .+ Ax.*jx .+ Ay.*jy .+ Az.*jz
+            h = 1.0f-3
+            h_vec_x = CUDA.CuArray(Float32[h, 0.0f0, 0.0f0])
+            h_vec_y = CUDA.CuArray(Float32[0.0f0, h, 0.0f0])
+            h_vec_z = CUDA.CuArray(Float32[0.0f0, 0.0f0, h])
+            
+            # Expand spatial coordinates to match time dimension
+            x_spatial_expanded = repeat(x_spatial, 1, n_times)
+            
+            x_plus = x_spatial_expanded .+ h_vec_x
+            X_x_plus = CUDA.vcat(x_plus, reshape(t_vals, 1, :))
+            pred_x_plus = phi_pred_fun(X_x_plus, θ_gpu)
+            Px_x_plus = reshape(pred_x_plus[5, :], n_times, batch_size)
+            Py_x_plus = reshape(pred_x_plus[6, :], n_times, batch_size)
+            Pz_x_plus = reshape(pred_x_plus[7, :], n_times, batch_size)
+            
+            y_plus = x_spatial_expanded .+ h_vec_y
+            X_y_plus = CUDA.vcat(y_plus, reshape(t_vals, 1, :))
+            pred_y_plus = phi_pred_fun(X_y_plus, θ_gpu)
+            Px_y_plus = reshape(pred_y_plus[5, :], n_times, batch_size)
+            Py_y_plus = reshape(pred_y_plus[6, :], n_times, batch_size)
+            Pz_y_plus = reshape(pred_y_plus[7, :], n_times, batch_size)
+            
+            z_plus = x_spatial_expanded .+ h_vec_z
+            X_z_plus = CUDA.vcat(z_plus, reshape(t_vals, 1, :))
+            pred_z_plus = phi_pred_fun(X_z_plus, θ_gpu)
+            Px_z_plus = reshape(pred_z_plus[5, :], n_times, batch_size)
+            Py_z_plus = reshape(pred_z_plus[6, :], n_times, batch_size)
+            Pz_z_plus = reshape(pred_z_plus[7, :], n_times, batch_size)
+            
+            dPxdx = (Px_x_plus .- Px) ./ h
+            dPydy = (Py_y_plus .- Py) ./ h
+            dPzdz = (Pz_z_plus .- Pz) ./ h
+            
+            rho = -(dPxdx .+ dPydy .+ dPzdz)
+            
+            dPxdt = diff(Px; dims=1) ./ h
+            dPydt = diff(Py; dims=1) ./ h
+            dPzdt = diff(Pz; dims=1) ./ h
+            
+            jx = dPxdt
+            jy = dPydt
+            jz = dPzdt
+            
+            # Use only first n_times-1 elements to match diff dimensions (n_times-1, batch_size)
+            rho_t = rho[1:end-1, :]
+            phi_t = phi[1:end-1, :]
+            Ax_t = Ax[1:end-1, :]
+            Ay_t = Ay[1:end-1, :]
+            Az_t = Az[1:end-1, :]
+            
+            energy_per_time = rho_t .* phi_t .+ Ax_t.*jx .+ Ay_t.*jy .+ Az_t.*jz
             energy_mean = mean(energy_per_time, dims=1)
             
             return vec(energy_mean)
         end
     end
     
-    # Вычисляем интеграл - передаём θ как часть параметров
     E_field = mc_integral_gpu(field_energy_mc, θ, inner_lb, inner_ub, N_mc)
     
-    # Нормировка на объём: получаем среднюю плотность энергии
-    volume = prod(Float32.(inner_ub) .- Float32.(inner_lb))
+    volume = prod(inner_ub .- inner_lb)
     E_field_normalized = E_field / volume
     
-    # Экспоненциальный лосс с нормированной энергией
-    # L_field = exp(-E_field_normalized / scale)
-    # При большой энергии -> маленький лосс (стимулируем максимизацию энергии)
     scale_Float = Float32(convert(T, field_energy_scale))
     L_field = exp(-E_field_normalized / scale_Float)
     
@@ -278,13 +305,13 @@ end
     compute_tv_regularization(phi_pred_fun, θ, measured_time, inner_lb, inner_ub, 
                             tv_epsilon::T, tv_scale::T, num_tv_time_samples::Int=5, N_mc::Int=1000)
 
-Вычисляет Total Variation (TV) регуляризацию на плотность заряда ρ.
+Вычисляет Total Variation (TV) регуляризацию на плотность заряда ρ = -div P.
 
 TV регуляризация способствует сохранению discontinuities (точечных источников),
 что идеально для моделирования токовых диполей - решение состоит из множества точечных зарядов.
 
 Формула: TV = ∫√(|∇ρ|² + ε²) dV
-- ρ - плотность заряда (5-й компонент выхода сети)
+- ρ = -div P = -(∂Px/∂x + ∂Py/∂y + ∂Pz/∂z) - плотность заряда через дивергенцию поляризации
 - ε - параметр сглаживания для дифференцируемости
 - Интегрирование по пространству и усреднение по времени
 
@@ -308,20 +335,15 @@ function compute_tv_regularization(phi_pred_fun, θ, measured_time, inner_lb::Ve
                                    tv_epsilon::T, num_tv_time_samples::Int=5, N_mc::Int=1000) where T <: Real
     dev = Lux.gpu_device()
     
-    # Создаём временные точки
     if length(measured_time) < 2
         error("measured_time must contain at least 2 distinct time points")
     end
     t_min = minimum(measured_time)
     t_max = maximum(measured_time)
-    # Используем ignore_derivatives для range - Zygote не имеет adjoint для StepRangeLen
     time_points = ignore_derivatives() do
         collect(range(t_min, t_max, length=num_tv_time_samples))
     end
     
-    # Функция для вычисления TV на ρ: √(|∂ρ/∂x|² + |∂ρ/∂y|² + |∂ρ/∂z|² + ε)
-    # ρ - это 5-й компонент выхода сети
-    # Градиенты вычисляются через конечные разности (vectorized, без циклов и мутаций)
     tv_mc = let times = time_points, n_times_val = length(time_points), eps = Float32(tv_epsilon),
               phi_fn = phi_pred_fun, device = dev
         function(x_spatial::AbstractArray, θ_inner)
@@ -330,56 +352,48 @@ function compute_tv_regularization(phi_pred_fun, θ, measured_time, inner_lb::Ve
             
             θ_gpu = θ_inner |> device
             
-            # Используем первую временную точку для вычисления градиентов
             t0 = Float32(times[1])
             t_vec = fill(t0, batch_size) |> device
             
-            # Полные координаты [x, y, z, t]
-            X_full = CUDA.vcat(x_spatial, reshape(t_vec, 1, :))
-            
-            # Вычисляем ρ для всех точек батча
-            pred = phi_fn(X_full, θ_gpu)
-            rho = pred[5, :]  # ρ - 5-й компонент
-            
-            # Вычисляем пространственные градиенты через конечные разности
-            # Используем малое смещение h для аппроксимации ∂ρ/∂x, ∂ρ/∂y, ∂ρ/∂z
             h = 1.0f-3
             
-            # Создаём векторы смещения на GPU (нельзя broadcast CPU вектор с GPU массивом)
+            X_full = CUDA.vcat(x_spatial, reshape(t_vec, 1, :))
+            pred = phi_fn(X_full, θ_gpu)
+            Px = pred[5, :]
+            Py = pred[6, :]
+            Pz = pred[7, :]
+            rho = -(Px .+ Py .+ Pz)  # placeholder, will be recomputed below
+            
             h_vec_x = CUDA.CuArray(Float32[h, 0.0f0, 0.0f0])
             h_vec_y = CUDA.CuArray(Float32[0.0f0, h, 0.0f0])
             h_vec_z = CUDA.CuArray(Float32[0.0f0, 0.0f0, h])
             
-            # Смещение по x
-            x_plus_h = x_spatial .+ h_vec_x
-            X_x_plus = CUDA.vcat(x_plus_h, reshape(t_vec, 1, :))
-            rho_x_plus = phi_fn(X_x_plus, θ_gpu)[5, :]
-            grad_x = (rho_x_plus .- rho) ./ h
+            function compute_rho(X)
+                p = phi_fn(X, θ_gpu)
+                dPxdx_est = (phi_fn(CUDA.vcat(X[1:3, :] .+ h_vec_x, X[4:4, :]), θ_gpu)[5, :] .- p[5, :]) ./ h
+                dPydy_est = (phi_fn(CUDA.vcat(X[1:3, :] .+ h_vec_y, X[4:4, :]), θ_gpu)[6, :] .- p[6, :]) ./ h
+                dPzdz_est = (phi_fn(CUDA.vcat(X[1:3, :] .+ h_vec_z, X[4:4, :]), θ_gpu)[7, :] .- p[7, :]) ./ h
+                return -(dPxdx_est .+ dPydy_est .+ dPzdz_est)
+            end
             
-            # Смещение по y
-            y_plus_h = x_spatial .+ h_vec_y
-            X_y_plus = CUDA.vcat(y_plus_h, reshape(t_vec, 1, :))
-            rho_y_plus = phi_fn(X_y_plus, θ_gpu)[5, :]
-            grad_y = (rho_y_plus .- rho) ./ h
+            rho_0 = compute_rho(X_full)
+            rho_x = compute_rho(CUDA.vcat(x_spatial .+ h_vec_x, reshape(t_vec, 1, :)))
+            rho_y = compute_rho(CUDA.vcat(x_spatial .+ h_vec_y, reshape(t_vec, 1, :)))
+            rho_z = compute_rho(CUDA.vcat(x_spatial .+ h_vec_z, reshape(t_vec, 1, :)))
             
-            # Смещение по z
-            z_plus_h = x_spatial .+ h_vec_z
-            X_z_plus = CUDA.vcat(z_plus_h, reshape(t_vec, 1, :))
-            rho_z_plus = phi_fn(X_z_plus, θ_gpu)[5, :]
-            grad_z = (rho_z_plus .- rho) ./ h
+            drho_dx = (rho_x .- rho_0) ./ h
+            drho_dy = (rho_y .- rho_0) ./ h
+            drho_dz = (rho_z .- rho_0) ./ h
             
-            # TV: √(grad_x² + grad_y² + grad_z² + ε)
-            tv_per_point = sqrt.(grad_x.^2 .+ grad_y.^2 .+ grad_z.^2 .+ eps)
+            tv_per_point = sqrt.(drho_dx.^2 .+ drho_dy.^2 .+ drho_dz.^2 .+ eps)
             
             return vec(tv_per_point)
         end
     end
     
-    # Вычисляем интеграл
     tv_integral = mc_integral_gpu(tv_mc, θ, inner_lb, inner_ub, N_mc)
     
-    # Нормировка на объём
-    volume = prod(Float32.(inner_ub) .- Float32.(inner_lb))
+    volume = prod(inner_ub .- inner_lb)
     L_tv = tv_integral / volume
     
     return (TV=tv_integral, L_tv=L_tv)
@@ -857,7 +871,7 @@ end
 """
 function data_loss(phi_pred_fun, θ, coords_gpu, values_gpu, n_points)
     # Векторизованный вызов сети для всех точек
-    # Сеть выводит [φ, Ax, Ay, Az, ρ, jx, jy, jz], нам нужен только φ (первая строка)
+    # Сеть выводит [φ, Ax, Ay, Az, Px, Py, Pz] или с производными [φ, Ax, Ay, Az, Px, Py, Pz, ...], нам нужен только φ (первая строка)
     pred_all = phi_pred_fun(coords_gpu, θ)
     phi_pred = pred_all[1, :]  # Извлекаем только потенциал φ
     

@@ -9,7 +9,7 @@
 using .InverseProblem
 
 # Создаем конфигурации
-nn_config = NeuralNetworkConfig(; input_dim=4, hidden_layers=[32, 32], output_dim=8)
+nn_config = NeuralNetworkConfig(; input_dim=4, hidden_layers=[32, 32], output_dim=7)
 opt_config = OptimizationConfig(; learning_rate=0.001, max_iterations=3000)
 loss_config = LossFunctionConfig(; lambda_data_init=10.0, lambda_schedule_type=:improvement)
 pml_config = PMLConfig()
@@ -20,8 +20,9 @@ results = run_eeg_inverse_problem(nn_config, opt_config, loss_config, pml_config
 
 Примечание: Новый подход PML через затухание (γ) и экранирование (α) не требует
 дополнительных выходов нейросети - эти коэффициенты вычисляются аналитически
-как функции координат. Размерность выхода всегда равна 8:
-[φ, Ax, Ay, Az, ρ, jx, jy, jz]
+как функции координат. Размерность выхода всегда равна 7 (без производных)
+или 35 (с производными):
+[φ, Ax, Ay, Az, Px, Py, Pz] + производные
 """
 
 module InverseProblem
@@ -111,8 +112,8 @@ export analyze_results, save_results, load_results, DomainConfig, PMLConfig
 Создает полную настройку для эксперимента обратной задачи ЭЭГ.
 Поддерживает как стандартную MLP архитектуру, так и Temporal-Aware архитектуру.
 
-Размерность выхода нейросети всегда равна 8 (φ, Ax, Ay, Az, ρ, jx, jy, jz).
-PML через затухание и экранирование не требует дополнительных выходов.
+Размерность выхода нейросети всегда равна 7 (φ, Ax, Ay, Az, Px, Py, Pz)
+или 35 с производными. PML через затухание и экранирование не требует дополнительных выходов.
 """
 function create_complete_setup(; measured_points, nn_config::Union{NeuralNetworkConfig, TemporalAwareNetworkConfig},
                                opt_config::OptimizationConfig,
@@ -152,14 +153,13 @@ function _create_complete_setup_standard(; measured_points, nn_config::NeuralNet
     println("✓ Данные нормированы, фактор: $(round(norm_factor, digits=6))")
     
     # Определяем output_dim на основе use_derivatives из конфигурации
-    output_dim = nn_config.use_derivatives ? 24 : 8
+    output_dim = nn_config.use_derivatives ? 35 : 7
     println("✓ Размерность выхода нейросети: $output_dim (PML: $(pml_config.enabled ? "включён" : "отключён"), производные: $(nn_config.use_derivatives))")
     
-    # Обновляем конфигурацию нейросети с правильной размерностью выхода
     nn_config_updated = NeuralNetworkConfig(;
         input_dim=nn_config.input_dim,
         hidden_layers=nn_config.hidden_layers,
-        output_dim=output_dim,  # Всегда 8
+        output_dim=output_dim,
         activation=nn_config.activation,
         use_gpu=nn_config.use_gpu
     )

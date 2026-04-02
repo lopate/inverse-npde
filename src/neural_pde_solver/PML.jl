@@ -106,10 +106,10 @@ end
 """
     get_output_dim(pml_config::PMLConfig)
 
-Вычисляет размерность выхода нейросети. Всегда 8 переменных: φ, Ax, Ay, Az, ρ, jx, jy, jz
+Вычисляет размерность выхода нейросети. Всегда 7 переменных: φ, Ax, Ay, Az, Px, Py, Pz
 """
 function get_output_dim(pml_config::PMLConfig)
-    return 8
+    return 7
 end
 
 """

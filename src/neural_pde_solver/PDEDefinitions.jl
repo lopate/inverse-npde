@@ -9,7 +9,7 @@
 - Оператор Лапласа
 - Оператор Даламбера с PML через затухание и экранирование
 - Физические константы (скорость света, диэлектрическая проницаемость и т.д.)
-- Определения переменных (скалярный потенциал, векторный потенциал, плотность заряда, плотность тока)
+- Определения переменных (скалярный потенциал, векторный потенциал, вектор поляризации)
 - Граничные условия и области определения
 - Поддержка PML (Perfectly Matched Layer) через γ и α
 
@@ -43,8 +43,7 @@ struct VariableSet
     t::Any
     φ::Any
     A::Vector{Any}
-    ρ::Any
-    j::Vector{Any}
+    P::Vector{Any}
     
     # Производные для φ: DφDt, DφDx, DφDy, DφDz
     DφDt::Any
@@ -53,53 +52,68 @@ struct VariableSet
     DφDz::Any
     
     # Производные для A: по 4 производные на каждую компоненту (Dt, Dx, Dy, Dz)
-    DA_dt::Vector{Any}  # [DAxDt, DAyDt, DAzDt]
-    DA_dx::Vector{Any}  # [DAxDx, DAyDx, DAzDx]
-    DA_dy::Vector{Any}  # [DAxDy, DAyDy, DAzDy]
-    DA_dz::Vector{Any}  # [DAxDz, DAyDz, DAzDz]
+    DA_dt::Vector{Any}
+    DA_dx::Vector{Any}
+    DA_dy::Vector{Any}
+    DA_dz::Vector{Any}
+    
+    # Производные для P: по 4 производные на каждую компоненту (Dt, Dx, Dy, Dz)
+    DP_dt::Vector{Any}
+    DP_dx::Vector{Any}
+    DP_dy::Vector{Any}
+    DP_dz::Vector{Any}
     
     # Флаг использования предсказанных производных
     use_derivatives::Bool
     
     function VariableSet(;x=nothing, y=nothing, z=nothing, t=nothing, 
-                        φ=nothing, A=nothing, ρ=nothing, j=nothing,
+                        φ=nothing, A=nothing, P=nothing,
                         use_derivatives::Bool=true)
         if x === nothing
             @parameters x, y, z, t
-            @variables φ(..), Ax(..), Ay(..), Az(..), ρ(..), jx(..), jy(..), jz(..)
+            @variables φ(..), Ax(..), Ay(..), Az(..), Px(..), Py(..), Pz(..)
             
-            # Производные для φ
             @variables DφDt(..) DφDx(..) DφDy(..) DφDz(..)
             
-            # Производные для Ax
             @variables DAxDt(..) DAxDx(..) DAxDy(..) DAxDz(..)
-            # Производные для Ay
             @variables DAyDt(..) DAyDx(..) DAyDy(..) DAyDz(..)
-            # Производные для Az
             @variables DAzDt(..) DAzDx(..) DAzDy(..) DAzDz(..)
             
-            A = [Ax, Ay, Az]
-            j = [jx, jy, jz]
+            @variables DPxDt(..) DPxDx(..) DPxDy(..) DPxDz(..)
+            @variables DPyDt(..) DPyDx(..) DPyDy(..) DPyDz(..)
+            @variables DPzDt(..) DPzDx(..) DPzDy(..) DPzDz(..)
             
-            # Векторы производных для A
+            A = [Ax, Ay, Az]
+            P = [Px, Py, Pz]
+            
             DA_dt = [DAxDt, DAyDt, DAzDt]
             DA_dx = [DAxDx, DAyDx, DAzDx]
             DA_dy = [DAxDy, DAyDy, DAzDy]
             DA_dz = [DAxDz, DAyDz, DAzDz]
             
-            return new(x, y, z, t, φ, A, ρ, j, 
+            DP_dt = [DPxDt, DPyDt, DPzDt]
+            DP_dx = [DPxDx, DPyDx, DPzDx]
+            DP_dy = [DPxDy, DPyDy, DPzDy]
+            DP_dz = [DPxDz, DPyDz, DPzDz]
+            
+            return new(x, y, z, t, φ, A, P,
                       DφDt, DφDx, DφDy, DφDz,
                       DA_dt, DA_dx, DA_dy, DA_dz,
+                      DP_dt, DP_dx, DP_dy, DP_dz,
                       use_derivatives)
         else
-            # Для обратной совместимости - создаём пустые производные
             DA_dt = [nothing, nothing, nothing]
             DA_dx = [nothing, nothing, nothing]
             DA_dy = [nothing, nothing, nothing]
             DA_dz = [nothing, nothing, nothing]
-            return new(x, y, z, t, φ, A, ρ, j,
+            DP_dt = [nothing, nothing, nothing]
+            DP_dx = [nothing, nothing, nothing]
+            DP_dy = [nothing, nothing, nothing]
+            DP_dz = [nothing, nothing, nothing]
+            return new(x, y, z, t, φ, A, P,
                       nothing, nothing, nothing, nothing,
                       DA_dt, DA_dx, DA_dy, DA_dz,
+                      DP_dt, DP_dx, DP_dy, DP_dz,
                       use_derivatives)
         end
     end
@@ -137,10 +151,10 @@ end
 Создает символьные переменные для PDE системы:
 - φ(..) - скалярный потенциал
 - Ax(..), Ay(..), Az(..) - компоненты векторного потенциала
-- ρ(..) - плотность заряда
-- jx(..), jy(..), jz(..) - компоненты плотности тока
+- Px(..), Py(..), Pz(..) - компоненты вектора поляризации
 - DφDt, DφDx, DφDy, DφDz - производные потенциала (если use_derivatives=true)
 - DAxDt, DAxDx, DAxDy, DAxDz и т.д. - производные векторного потенциала
+- DPxDt, DPxDx, DPxDy, DPxDz и т.д. - производные вектора поляризации
 - x, y, z, t - пространственные и временная координаты
 
 # Аргументы
@@ -264,29 +278,24 @@ function create_derivative_equations(variables::VariableSet)
     
     der_eqs = []
     
-    # Уравнения связывания для φ
     push!(der_eqs, Differential(variables.t)(variables.φ(coords...)) ~ variables.DφDt(coords...))
     push!(der_eqs, Differential(variables.x)(variables.φ(coords...)) ~ variables.DφDx(coords...))
     push!(der_eqs, Differential(variables.y)(variables.φ(coords...)) ~ variables.DφDy(coords...))
     push!(der_eqs, Differential(variables.z)(variables.φ(coords...)) ~ variables.DφDz(coords...))
     
-    # Уравнения связывания для Ax
-    push!(der_eqs, Differential(variables.t)(variables.A[1](coords...)) ~ variables.DA_dt[1](coords...))
-    push!(der_eqs, Differential(variables.x)(variables.A[1](coords...)) ~ variables.DA_dx[1](coords...))
-    push!(der_eqs, Differential(variables.y)(variables.A[1](coords...)) ~ variables.DA_dy[1](coords...))
-    push!(der_eqs, Differential(variables.z)(variables.A[1](coords...)) ~ variables.DA_dz[1](coords...))
+    for i in 1:3
+        push!(der_eqs, Differential(variables.t)(variables.A[i](coords...)) ~ variables.DA_dt[i](coords...))
+        push!(der_eqs, Differential(variables.x)(variables.A[i](coords...)) ~ variables.DA_dx[i](coords...))
+        push!(der_eqs, Differential(variables.y)(variables.A[i](coords...)) ~ variables.DA_dy[i](coords...))
+        push!(der_eqs, Differential(variables.z)(variables.A[i](coords...)) ~ variables.DA_dz[i](coords...))
+    end
     
-    # Уравнения связывания для Ay
-    push!(der_eqs, Differential(variables.t)(variables.A[2](coords...)) ~ variables.DA_dt[2](coords...))
-    push!(der_eqs, Differential(variables.x)(variables.A[2](coords...)) ~ variables.DA_dx[2](coords...))
-    push!(der_eqs, Differential(variables.y)(variables.A[2](coords...)) ~ variables.DA_dy[2](coords...))
-    push!(der_eqs, Differential(variables.z)(variables.A[2](coords...)) ~ variables.DA_dz[2](coords...))
-    
-    # Уравнения связывания для Az
-    push!(der_eqs, Differential(variables.t)(variables.A[3](coords...)) ~ variables.DA_dt[3](coords...))
-    push!(der_eqs, Differential(variables.x)(variables.A[3](coords...)) ~ variables.DA_dx[3](coords...))
-    push!(der_eqs, Differential(variables.y)(variables.A[3](coords...)) ~ variables.DA_dy[3](coords...))
-    push!(der_eqs, Differential(variables.z)(variables.A[3](coords...)) ~ variables.DA_dz[3](coords...))
+    for i in 1:3
+        push!(der_eqs, Differential(variables.t)(variables.P[i](coords...)) ~ variables.DP_dt[i](coords...))
+        push!(der_eqs, Differential(variables.x)(variables.P[i](coords...)) ~ variables.DP_dx[i](coords...))
+        push!(der_eqs, Differential(variables.y)(variables.P[i](coords...)) ~ variables.DP_dy[i](coords...))
+        push!(der_eqs, Differential(variables.z)(variables.P[i](coords...)) ~ variables.DP_dz[i](coords...))
+    end
     
     return der_eqs
 end
@@ -298,8 +307,8 @@ end
 и опциональным использованием предсказанных производных.
 
 Уравнения:
-1. □φ = -4πρ/ε (скалярный потенциал)
-2. □A_i = -4πμj_i/c (компоненты векторного потенциала)
+1. □φ = 4π·div P / ε = 4π·(∂Px/∂x + ∂Py/∂y + ∂Pz/∂z) / ε (скалярный потенциал)
+2. □A_i = -4πμ/c · ∂P_i/∂t (компоненты векторного потенциала)
 3. ∇·A + (εμ/c)∂φ/∂t = 0 (калибровка Лоренца)
 4. Уравнения связывания производных (der_) если use_derivatives=true
 
@@ -318,73 +327,69 @@ PML добавляет члены затухания и экранировани
 function create_pde_system(constants::PhysicalConstants, variables::VariableSet, bcs, domains; 
                            pml_config::PMLConfig=default_pml_config(),
                            include_derivatives::Bool=true)
-    # Разрешаем параметры PML (вычисляем автоматические значения, если нужно)
     resolved_pml_config = resolve_pml_config(pml_config, domains, constants.c)
     
     coords = (variables.x, variables.y, variables.z, variables.t)
     
-    # Уравнение для скалярного потенциала φ
     if include_derivatives && variables.use_derivatives
-        # Используем предсказанные производные
         eq_φ = dalembert_operator(
             variables.φ(coords...),
-            variables.DφDt(coords...),    # dF_dt_pred
-            variables.DφDx(coords...),    # dF_dx_pred
-            variables.DφDy(coords...),    # dF_dy_pred
-            variables.DφDz(coords...),    # dF_dz_pred
+            variables.DφDt(coords...),
+            variables.DφDx(coords...),
+            variables.DφDy(coords...),
+            variables.DφDz(coords...),
             [variables.x, variables.y, variables.z],
             constants, variables, domains;
             pml_config=resolved_pml_config
-        ) ~ -4 * pi * variables.ρ(coords...) / constants.ε
+        ) ~ 4 * pi * (
+            Differential(variables.x)(variables.P[1](coords...)) +
+            Differential(variables.y)(variables.P[2](coords...)) +
+            Differential(variables.z)(variables.P[3](coords...))
+        ) / constants.ε
     else
-        # Используем старый метод с автоматическим дифференцированием
         eq_φ = dalembert_operator(
             variables.φ(coords...),
             [variables.x, variables.y, variables.z],
             constants, variables, domains;
             pml_config=resolved_pml_config
-        ) ~ -4 * pi * variables.ρ(coords...) / constants.ε
+        ) ~ 4 * pi * (
+            Differential(variables.x)(variables.P[1](coords...)) +
+            Differential(variables.y)(variables.P[2](coords...)) +
+            Differential(variables.z)(variables.P[3](coords...))
+        ) / constants.ε
     end
     
-    # Уравнения для компонент векторного потенциала A
     eq_A = []
     for i in 1:3
         if include_derivatives && variables.use_derivatives
-            # Используем предсказанные производные
             push!(eq_A, dalembert_operator(
                 variables.A[i](coords...),
-                variables.DA_dt[i](coords...),    # dF_dt_pred
-                variables.DA_dx[i](coords...),    # dF_dx_pred
-                variables.DA_dy[i](coords...),    # dF_dy_pred
-                variables.DA_dz[i](coords...),    # dF_dz_pred
+                variables.DA_dt[i](coords...),
+                variables.DA_dx[i](coords...),
+                variables.DA_dy[i](coords...),
+                variables.DA_dz[i](coords...),
                 [variables.x, variables.y, variables.z],
                 constants, variables, domains;
                 pml_config=resolved_pml_config
-            ) ~ -constants.μ * 4 * pi / constants.c * variables.j[i](coords...))
+            ) ~ -constants.μ * 4 * pi / constants.c * variables.DP_dt[i](coords...))
         else
-            # Используем старый метод с автоматическим дифференцированием
             push!(eq_A, dalembert_operator(
                 variables.A[i](coords...),
                 [variables.x, variables.y, variables.z],
                 constants, variables, domains;
                 pml_config=resolved_pml_config
-            ) ~ -constants.μ * 4 * pi / constants.c * variables.j[i](coords...))
+            ) ~ -constants.μ * 4 * pi / constants.c * Differential(variables.t)(variables.P[i](coords...)))
         end
     end
     
-    # Условие калибровки Лоренца
     eq_gauge = (Differential(variables.x)(variables.A[1](coords...)) + 
                 Differential(variables.y)(variables.A[2](coords...)) + 
                 Differential(variables.z)(variables.A[3](coords...)) + 
                 (constants.ε * constants.μ / constants.c) * Differential(variables.t)(variables.φ(coords...))) ~ 0.0
     
-    # Объединяем все уравнения
     eq = [eq_φ; eq_A; eq_gauge]
     
-    # Переменные системы
     if include_derivatives && variables.use_derivatives
-        # 8 базовых + 16 производных = 24 переменные
-        # Создаём производные отдельно
         derivs_phi = [variables.DφDt(coords...), variables.DφDx(coords...), variables.DφDy(coords...), variables.DφDz(coords...)]
         derivs_A = vcat(
             [variables.DA_dt[i](coords...) for i in 1:3],
@@ -392,21 +397,25 @@ function create_pde_system(constants::PhysicalConstants, variables::VariableSet,
             [variables.DA_dy[i](coords...) for i in 1:3],
             [variables.DA_dz[i](coords...) for i in 1:3]
         )
+        derivs_P = vcat(
+            [variables.DP_dt[i](coords...) for i in 1:3],
+            [variables.DP_dx[i](coords...) for i in 1:3],
+            [variables.DP_dy[i](coords...) for i in 1:3],
+            [variables.DP_dz[i](coords...) for i in 1:3]
+        )
         allvars = vcat(
             [variables.φ(coords...)],
             [A_(coords...) for A_ in variables.A],
-            [variables.ρ(coords...)],
-            [j_(coords...) for j_ in variables.j],
+            [P_(coords...) for P_ in variables.P],
             derivs_phi,
-            derivs_A
+            derivs_A,
+            derivs_P
         )
     else
-        # Только 8 базовых переменных
         allvars = vcat(
             [variables.φ(coords...)],
             [A_(coords...) for A_ in variables.A],
-            [variables.ρ(coords...)],
-            [j_(coords...) for j_ in variables.j]
+            [P_(coords...) for P_ in variables.P]
         )
     end
     

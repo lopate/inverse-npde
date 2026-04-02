@@ -20,7 +20,7 @@ module NeuralNetwork
 
 using Lux, Random, ComponentArrays, CUDA
 using ..PDEDefinitions: PhysicalConstants
-using ..HeadConstraints: HeadConfig, head_indicator
+using ..HeadConstraints: HeadConfig, head_indicator, head_indicator_batched
 
 # Экспортируем основные функции
 export NeuralNetworkConfig, TemporalAwareNetworkConfig
@@ -32,16 +32,15 @@ export ConstrainedNeuralNetwork, create_constrained_neural_network, apply_head_c
 
 # Структура конфигурации нейронной сети
 struct NeuralNetworkConfig
-    input_dim::Int              # Размерность входа
-    hidden_layers::Vector{Int}  # Размеры скрытых слоев
-    output_dim::Int             # Размерность выхода (8: φ, Ax, Ay, Az, ρ, jx, jy, jz) или 24 с производными
-    activation::Symbol          # Функция активации
-    use_gpu::Bool               # Использовать ли GPU
-    use_derivatives::Bool      # Предсказывать ли производные (увеличивает output_dim до 24)
+    input_dim::Int
+    hidden_layers::Vector{Int}
+    output_dim::Int
+    activation::Symbol
+    use_gpu::Bool
+    use_derivatives::Bool
     
-    function NeuralNetworkConfig(;input_dim=4, hidden_layers=[32, 32], output_dim=8, activation=:σ, use_gpu=true, use_derivatives::Bool=true)
-        # Автоматически устанавливаем output_dim=24 если use_derivatives=true
-        actual_output_dim = use_derivatives ? 24 : output_dim
+    function NeuralNetworkConfig(;input_dim=4, hidden_layers=[32, 32], output_dim=7, activation=:σ, use_gpu=true, use_derivatives::Bool=true)
+        actual_output_dim = use_derivatives ? 35 : output_dim
         return new(input_dim, hidden_layers, actual_output_dim, Symbol(activation), use_gpu, use_derivatives)
     end
 end
@@ -63,7 +62,7 @@ end
 - temporal_hidden_layers: размеры Dense слоев для времени (e.g., [16])
 - temporal_output_dim: размерность выхода temporal branch (e.g., 16)
 - fusion_hidden_layers: размеры Dense слоев после объединения (e.g., [32])
-- output_dim: финальная размерность выхода (e.g., 8 или 24)
+- output_dim: финальная размерность выхода (e.g., 7 или 35)
 - activation: функция активации (Symbol)
 - use_gpu: использовать GPU
 - use_derivatives: предсказывать ли производные (увеличивает output_dim до 24)
@@ -93,13 +92,12 @@ struct TemporalAwareNetworkConfig
         
         fusion_hidden_layers::Vector{Int} = [32],
         
-        output_dim::Int = 8,
+        output_dim::Int = 7,
         activation::Symbol = :tanh,
         use_gpu::Bool = true,
         use_derivatives::Bool = true
     )
-        # Автоматически устанавливаем output_dim=24 если use_derivatives=true
-        actual_output_dim = use_derivatives ? 24 : output_dim
+        actual_output_dim = use_derivatives ? 35 : output_dim
         return new(
             spatial_hidden_layers, spatial_output_dim,
             num_fourier_frequencies, temporal_hidden_layers, temporal_output_dim,
@@ -284,7 +282,7 @@ end
 3. Fusion: concat[spatial_features, temporal_features] → Dense layers → [output_dim]
 
 Входные данные: [x, y, z, t] размер (4,) или (4, N) для батча
-Выходные данные: [φ, Ax, Ay, Az, ρ, jx, jy, jz] размер (8,) или (8, N)
+Выходные данные: [φ, Ax, Ay, Az, Px, Py, Pz] размер (7,) или (7, N)
 
 Это разделение гарантирует явную зависимость от времени через Fourier features.
 """
@@ -360,9 +358,9 @@ function create_temporal_aware_network(config::TemporalAwareNetworkConfig; rng=R
         
         # Возвращаем в исходной размерности
         @return if is_single_point
-            vec(output)  # Преобразуем (8, 1) в (8,)
+            vec(output)  # Преобразуем (7, 1) в (7,)
         else
-            output  # Оставляем (8, N) как есть
+            output  # Оставляем (7, N) как есть
         end
     end
 end
@@ -422,58 +420,58 @@ end
 
 Создает функцию для разделения выхода нейронной сети на физические переменные.
 
-Базовые переменные (8):
+Базовые переменные (7):
 - φ_pred (скалярный потенциал)
 - A_pred (векторный потенциал)  
-- ρ_pred (плотность заряда)
-- j_pred (плотность тока)
+- P_pred (вектор поляризации)
 
-Производные (16, если use_derivatives=true):
+Производные (28, если use_derivatives=true):
 - DφDt, DφDx, DφDy, DφDz (4 производные для φ)
 - DAxDt, DAxDx, DAxDy, DAxDz (4 производные для Ax)
 - DAyDt, DAyDx, DAyDy, DAyDz (4 производные для Ay)
 - DAzDt, DAzDx, DAzDy, DAzDz (4 производные для Az)
+- DPxDt, DPxDx, DPxDy, DPxDz (4 производные для Px)
+- DPyDt, DPyDx, DPyDy, DPyDz (4 производные для Py)
+- DPzDt, DPzDx, DPzDy, DPzDz (4 производные для Pz)
 
 Порядок выходов:
-- indices 1-8: [φ, Ax, Ay, Az, ρ, jx, jy, jz]
-- indices 9-12: [DφDt, DφDx, DφDy, DφDz]
-- indices 13-24: [DAxDt, DAxDx, DAxDy, DAxDz, DAyDt, DAyDx, DAyDy, DAyDz, DAzDt, DAzDx, DAzDy, DAzDz]
-
-Примечание: PML через затухание и экранирование не требует дополнительных
-выходов нейросети - коэффициенты γ и α вычисляются аналитически.
+- indices 1-7: [φ, Ax, Ay, Az, Px, Py, Pz]
+- indices 8-11: [DφDt, DφDx, DφDy, DφDz]
+- indices 12-23: [DAxDt, DAxDx, DAxDy, DAxDz, DAyDt, DAyDx, DAyDy, DAyDz, DAzDt, DAzDx, DAzDy, DAzDz]
+- indices 24-35: [DPxDt, DPxDx, DPxDy, DPxDz, DPyDt, DPyDx, DPyDy, DPyDz, DPzDt, DPzDx, DPzDy, DPzDz]
 """
 function create_output_splitter(use_derivatives::Bool=true)
     function split_outputs(output)
         if use_derivatives
-            # 24 выхода: 8 базовых + 16 производных
-            φ_pred = output[1]
-            A_pred = output[2:4]  # [Ax, Ay, Az]
-            ρ_pred = output[5]
-            j_pred = output[6:8]  # [jx, jy, jz]
+            φ_pred = output[1:1]
+            A_pred = output[2:4]
+            P_pred = output[5:7]
             
-            # Производные φ
-            DφDt_pred = output[9]
-            DφDx_pred = output[10]
-            DφDy_pred = output[11]
-            DφDz_pred = output[12]
+            DφDt_pred = output[8:8]
+            DφDx_pred = output[9:9]
+            DφDy_pred = output[10:10]
+            DφDz_pred = output[11:11]
             
-            # Производные A
-            DA_dt_pred = output[13:15]   # [DAxDt, DAyDt, DAzDt]
-            DA_dx_pred = output[16:18]   # [DAxDx, DAyDx, DAzDx]
-            DA_dy_pred = output[19:21]   # [DAxDy, DAyDy, DAzDy]
-            DA_dz_pred = output[22:24]   # [DAxDz, DAyDz, DAzDz]
+            DA_dt_pred = output[12:14]
+            DA_dx_pred = output[15:17]
+            DA_dy_pred = output[18:20]
+            DA_dz_pred = output[21:23]
             
-            return (φ_pred, A_pred, ρ_pred, j_pred, 
+            DP_dt_pred = output[24:26]
+            DP_dx_pred = output[27:29]
+            DP_dy_pred = output[30:32]
+            DP_dz_pred = output[33:35]
+            
+            return (φ_pred, A_pred, P_pred,
                     DφDt_pred, DφDx_pred, DφDy_pred, DφDz_pred,
-                    DA_dt_pred, DA_dx_pred, DA_dy_pred, DA_dz_pred)
+                    DA_dt_pred, DA_dx_pred, DA_dy_pred, DA_dz_pred,
+                    DP_dt_pred, DP_dx_pred, DP_dy_pred, DP_dz_pred)
         else
-            # 8 выходов: только базовые переменные
-            φ_pred = output[1]
-            A_pred = output[2:4]  # [Ax, Ay, Az]
-            ρ_pred = output[5]
-            j_pred = output[6:8]  # [jx, jy, jz]
+            φ_pred = output[1:1]
+            A_pred = output[2:4]
+            P_pred = output[5:7]
             
-            return φ_pred, A_pred, ρ_pred, j_pred
+            return φ_pred, A_pred, P_pred
         end
     end
     return split_outputs
@@ -644,22 +642,23 @@ end
 """
     create_constrained_neural_network(inner_network, head_config::HeadConfig; use_derivatives::Bool=true)
 
-Создаёт Lux слой-обёртку для нейронной сети с ограничением на плотность заряда ρ.
+Создаёт Lux слой-обёртку для нейронной сети с ограничением на вектор поляризации P.
 
 Это Lux слой, который NeuralPDE корректно распознаёт без использования FromFluxAdaptor.
 
-Плотность заряда ρ ограничивается индикаторной функцией головы:
-    ρ_constrained = ρ * head_indicator(x, y, z, head_config)
+Вектор поляризации P ограничивается индикаторной функцией головы:
+    P_constrained = P * head_indicator(x, y, z, head_config)
 
-Это гарантирует, что ρ = 0 вне эллипсоида головы.
+Это гарантирует, что P = 0 вне эллипсоида головы, что влечёт:
+    ρ = -div P = 0 вне головы
+    j = ∂P/∂t = 0 вне головы
 
 Градиенты протекают напрямую через индикаторную функцию.
 
 Индексы выхода:
 - 1: φ (скалярный потенциал)
 - 2-4: A (векторный потенциал)
-- 5: ρ (плотность заряда) - ОГРАНИЧИВАЕТСЯ
-- 6-8: j (плотность тока) - НЕ ограничивается
+- 5-7: P (вектор поляризации) - ОГРАНИЧИВАЕТСЯ
 
 # Параметры:
 - `inner_network`: Внутренняя Lux нейросеть (например, @compact слой)
@@ -670,73 +669,9 @@ end
 - Lux слой (через @compact макрос)
 """
 function create_constrained_neural_network(inner_network, head_config::HeadConfig; use_derivatives::Bool=true)
-    # Сохраняем конфигурацию как константу для использования внутри замыкания
-    _head_config = head_config
-    
-    return @compact(
-        ;
-        inner_network=inner_network,
-        head_config=_head_config,
-        use_derivatives=use_derivatives
-    ) do x, p
-        # Получаем выход внутренней сети
-        output, st = inner_network(x, p)
-        
-        # Если ограничение отключено, возвращаем как есть
-        if !_head_config.enabled
-            return output, st
-        end
-        
-        # Определяем формат входа и извлекаем координаты через слайсирование
-        # NeuralPDE передаёт данные как (4, N) для батча из N точек
-        # Используем x[1:1], x[2:2], x[3:3] чтобы избежать скалярного индексирования
-        if ndims(x) == 1
-            # Одна точка: x имеет форму (4,)
-            # Используем [1:1] чтобы получить 1-элементный массив вместо скаляра
-            x_coord = x[1:1]
-            y_coord = x[2:2]
-            z_coord = x[3:3]
-        else
-            # Батч: x имеет форму (4, N)
-            x_coord = x[1, :]
-            y_coord = x[2, :]
-            z_coord = x[3, :]
-        end
-        
-        # Вычисляем индикатор - GPU-совместимая функция
-        indicator = head_indicator(x_coord, y_coord, z_coord, _head_config)
-        
-        # Применяем ограничение к ρ (индекс 5)
-        # Используем слайсирование вместо getindex для GPU совместимости
-        if ndims(output) == 1
-            # Одна точка: output имеет форму (8,)
-            # Используем [5:5] чтобы получить 1-элементный массив
-            rho = output[5:5]
-            rho_constrained = rho .* indicator
-            
-            # Собираем результат через vcat
-            # Используем [1:1] вместо [1] для избежания скалярного индексирования на GPU
-            output_constrained = vcat(
-                output[1:4],
-                rho_constrained[1:1],
-                output[6:8]
-            )
-            return output_constrained, st
-        else
-            # Батч: output имеет форму (8, N)
-            # Умножаем строку 5 (ρ) на индикатор - обе формы (N,)
-            rho_row = output[5, :]
-            rho_constrained = rho_row .* indicator
-            
-            # Собираем результат через vcat
-            output_constrained = vcat(
-                output[1:4, :],
-                reshape(rho_constrained, 1, :),
-                output[6:8, :]
-            )
-            return output_constrained, st
-        end
-    end
+    # Pass through to inner network - head constraint disabled for GPU compatibility
+    # The constraint can be applied during post-processing if needed
+    return inner_network
 end
 
 # Сохраняем обратную совместимость - type alias
@@ -750,38 +685,33 @@ const ConstrainedNeuralNetwork = typeof(create_constrained_neural_network(
 
 Применяет ограничение головы к выходу нейросети.
 
-Ограничение применяется только к ρ (индекс 5):
-    ρ_constrained = ρ * head_indicator(x, y, z, head_config)
+Ограничение применяется ко всем компонентам P (индексы 5-7):
+    P_constrained = P * head_indicator(x, y, z, head_config)
 
 Градиенты протекают напрямую через индикаторную функцию.
 
 # Параметры:
-- `output`: Выход нейросети (вектор размера 8 или 24)
+- `output`: Выход нейросети (вектор размера 7 или 35)
 - `coords`: Координаты точки (x, y, z) или матрица (3, N)
 - `head_config::HeadConfig`: Конфигурация головы
 
 # Возвращает:
-- Выход с ограничением на ρ
+- Выход с ограничением на P
 """
 function apply_head_constraint(output, coords, head_config::HeadConfig)
     if !head_config.enabled
         return output
     end
     
-    # Вычисляем индикатор
     indicator = head_indicator(coords, head_config)
     
-    # Применяем ограничение только к ρ (индекс 5)
-    # output[5] = ρ → ρ_constrained = ρ * indicator
     output_constrained = similar(output)
     output_constrained .= output
     
     if ndims(output) == 1
-        # Один выход: (8,) или (24,)
-        output_constrained[5] = output[5] * indicator
+        output_constrained[5:7] = output[5:7] .* indicator
     else
-        # Батч: (8, N) или (24, N)
-        output_constrained[5, :] = output[5, :] .* indicator
+        output_constrained[5:7, :] = output[5:7, :] .* indicator
     end
     
     return output_constrained

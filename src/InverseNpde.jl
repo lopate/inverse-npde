@@ -9,7 +9,7 @@
 using .InverseNpde
 
 # Создаем конфигурации
-nn_config = NeuralNetworkConfig(; input_dim=4, hidden_layers=[32, 32], output_dim=8)
+nn_config = NeuralNetworkConfig(; input_dim=4, hidden_layers=[32, 32], output_dim=7)
 opt_config = OptimizationConfig(; learning_rate=0.001, max_iterations=3000)
 loss_config = LossFunctionConfig(; lambda_data=10.0)
 
@@ -40,7 +40,7 @@ using .Optimization: OptimizationConfig, LossFunctionConfig, create_additional_l
                    validate_optimization_config, compute_field_energy_loss
 using .InverseProblem: DomainConfig, run_eeg_inverse_problem, get_available_devices, save_results, load_results
 using .PML: PMLConfig, default_pml_config
-using .HeadConstraints: HeadConfig, head_indicator, is_inside_ellipsoid, step_indicator
+using .HeadConstraints: HeadConfig, head_indicator, is_inside_ellipsoid, head_indicator_batched
 
 # Экспортируем для использования вне модуля
 export PhysicalConstants
@@ -52,7 +52,7 @@ export OptimizationConfig, LossFunctionConfig, create_additional_loss,
        validate_optimization_config, compute_field_energy_loss
 export DomainConfig, run_eeg_inverse_problem, get_available_devices
 export PMLConfig, default_pml_config
-export HeadConfig, head_indicator, is_inside_ellipsoid, step_indicator
+export HeadConfig, head_indicator, is_inside_ellipsoid, head_indicator_batched
 export save_results, load_results
 
 end # module

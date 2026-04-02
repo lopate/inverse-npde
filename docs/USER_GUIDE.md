@@ -124,11 +124,13 @@ using CUDA, Plots, TensorBoardLogger
 #### 2. Определение физической модели
 ```julia
 @parameters x, y, z, t
-@variables φ(..), Ax(..),Ay(..),Az(..), ρ(..), jx(..), jy(..), jz(..)
+@variables φ(..), Ax(..),Ay(..),Az(..), Px(..), Py(..), Pz(..)
 
-# Определение уравнений Максвелла
+# Определение уравнений Максвелла в терминах поляризации P:
+# ρ = -div P = -(∂Px/∂x + ∂Py/∂y + ∂Pz/∂z)
+# j = ∂P/∂t = (∂Px/∂t, ∂Py/∂t, ∂Pz/∂t)
 eqs = [
-    dalembert_operator(φ(x, y, z, t), [x, y, z], ε, μ, c) ~ -4 * pi * ρ(x, y, z, t) / ε
+    dalembert_operator(φ(x, y, z, t), [x, y, z], ε, μ, c) ~ 4 * pi * (Differential(x)(Px(x, y, z, t)) + Differential(y)(Py(x, y, z, t)) + Differential(z)(Pz(x, y, z, t))) / ε
     # ... дополнительные уравнения
 ]
 ```
@@ -137,7 +139,7 @@ eqs = [
 ```julia
 input_dim = 4  # x, y, z, t
 hidden_dim = 32
-output_dim = 8  # φ, Ax, Ay, Az, ρ, jx, jy, jz
+output_dim = 7  # φ, Ax, Ay, Az, Px, Py, Pz
 
 chain = Chain(
     Dense(input_dim, hidden_dim, σ),
@@ -229,7 +231,7 @@ print(f"P-value: {p_value:.4e}")
 ```julia
 # Размерность входа и выхода
 input_ = 4  # x, y, z, t
-output_ = 8 # φ, Ax, Ay, Az, ρ, jx, jy, jz
+output_ = 7 # φ, Ax, Ay, Az, Px, Py, Pz
 
 # Архитектура сети
 n = 32      # число нейронов в скрытых слоях
