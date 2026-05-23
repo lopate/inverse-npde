@@ -34,7 +34,7 @@ include("neural_pde_solver/InverseProblem.jl")
 using .PDEDefinitions: PhysicalConstants
 using .NeuralNetwork: TemporalAwareNetworkConfig, NeuralNetworkConfig, create_neural_network, 
                       create_temporal_aware_network, initialize_parameters, 
-                      initialize_temporal_aware_parameters, ConstrainedNeuralNetwork, apply_head_constraint
+                      initialize_temporal_aware_parameters, ConstrainedNeuralNetwork, apply_head_constraint, apply_head_constraint_to_output
 using .Optimization: OptimizationConfig, LossFunctionConfig, create_additional_loss, 
                    create_optimization_callback, setup_optimization, create_discretization,
                    validate_optimization_config, compute_field_energy_loss
@@ -46,7 +46,7 @@ using .HeadConstraints: HeadConfig, head_indicator, is_inside_ellipsoid, head_in
 export PhysicalConstants
 export TemporalAwareNetworkConfig, NeuralNetworkConfig, create_neural_network,
        create_temporal_aware_network, initialize_parameters, initialize_temporal_aware_parameters,
-       ConstrainedNeuralNetwork, apply_head_constraint
+       ConstrainedNeuralNetwork, apply_head_constraint, apply_head_constraint_to_output
 export OptimizationConfig, LossFunctionConfig, create_additional_loss, 
        create_optimization_callback, setup_optimization, create_discretization,
        validate_optimization_config, compute_field_energy_loss

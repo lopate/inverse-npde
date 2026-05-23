@@ -290,6 +290,14 @@ class EEGInverseSolver:
             "lambda_max": None,
             "lambda_schedule_type": "improvement",
             "lambda_schedule": {},
+            "lambda_field": 1.0,
+            "field_energy_scale": 3.0,
+            "num_field_time_samples": 5,
+            "lambda_tv": 0.1,
+            "tv_epsilon": 1e-5,
+            "tv_scale": 0.1,
+            "num_tv_time_samples": 5,
+            "lambda_l1": 0.0,
         }
 
     def _default_neural_config(self) -> Dict[str, Any]:
@@ -492,7 +500,15 @@ class EEGInverseSolver:
                                       lambda_max={lambda_max_str},
                                       lambda_time={loss_config.get("lambda_time", 1.0)},
                                       lambda_schedule_type=Symbol("{loss_config.get("lambda_schedule_type", "improvement")}"),
-                                      lambda_schedule={schedule_jl})
+                                      lambda_schedule={schedule_jl},
+                                      lambda_field={loss_config.get("lambda_field", 1.0)},
+                                      field_energy_scale={loss_config.get("field_energy_scale", 3.0)},
+                                      num_field_time_samples={loss_config.get("num_field_time_samples", 5)},
+                                      lambda_tv={loss_config.get("lambda_tv", 0.1)},
+                                      tv_epsilon={loss_config.get("tv_epsilon", 1e-5)},
+                                      tv_scale={loss_config.get("tv_scale", 0.1)},
+                                      num_tv_time_samples={loss_config.get("num_tv_time_samples", 5)},
+                                      lambda_l1={loss_config.get("lambda_l1", 0.0)})
             """)
 
             # Создаем конфигурацию PML через seval для корректной передачи именованных аргументов

@@ -269,7 +269,7 @@ function compute_field_energy_loss(phi_pred_fun, θ, measured_time, inner_lb::Ve
     E_field_normalized = E_field / volume
     
     scale_Float = Float32(convert(T, field_energy_scale))
-    L_field = exp(-E_field_normalized / scale_Float)
+    L_field = E_field_normalized / scale_Float
     
     return (E_field=E_field, E_field_normalized=E_field_normalized, L_field=L_field)
 end
@@ -646,7 +646,7 @@ mutable struct LossFunctionConfig
         
         # === НОВОЕ: Инициализация refs для TV и L1 ===
         tv_loss_ref = Ref{NamedTuple}((TV=0.0f0, L_tv=0.0f0))
-        l1_loss_ref = Ref{NamedTuple}((l1=0.0f0,))
+        l1_loss_ref = Ref{NamedTuple}((l1=0.0f0, L_l1=0.0f0))
 
         return new(lambda_pde, lambda_bc, lambda_data_init, lambda_min, lambda_max,
                    measured_points, coords, values, measured_time, n_points,
@@ -1203,7 +1203,7 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
             end
             
             # === НОВОЕ: Логируем L1 loss ===
-            if l1_loss_ref[] !== nothing && haskey(l1_loss_ref[], :l1)
+            if lambda_l1 > 0
                 log_value(logger, "Loss/L1", l1_loss_ref[].l1; step=iter)
                 log_value(logger, "Loss/L1_weighted", l1_loss_ref[].L_l1; step=iter)
             end
@@ -1230,7 +1230,7 @@ function create_optimization_callback(opt_config::OptimizationConfig, discretiza
             tv_val = tv_loss_ref[].TV
             tv_norm_val = tv_loss_ref[].L_tv
         end
-        if l1_loss_ref[] !== nothing && haskey(l1_loss_ref[], :l1)
+        if lambda_l1 > 0
             l1_val = l1_loss_ref[].l1
         end
         

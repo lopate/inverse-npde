@@ -28,7 +28,9 @@ export create_neural_network, create_temporal_aware_network
 export create_output_splitter, get_device_functions
 export initialize_parameters, initialize_temporal_aware_parameters
 export build_dense_chain, create_fourier_features
-export ConstrainedNeuralNetwork, create_constrained_neural_network, apply_head_constraint
+export ConstrainedNeuralNetwork, ConstrainedNetworkWrapper, create_constrained_neural_network, apply_head_constraint, apply_head_constraint_to_output
+
+# Lux is already imported at line 21
 
 # Структура конфигурации нейронной сети
 struct NeuralNetworkConfig
@@ -640,38 +642,163 @@ function validate_config(config::TemporalAwareNetworkConfig)
 end
 
 """
+    ConstrainedNetworkWrapper
+
+Custom Lux-compatible wrapper that applies head constraint to network output.
+This avoids @compact parameter nesting issues with complex inner networks.
+"""
+struct ConstrainedNetworkWrapper{N} <: Lux.AbstractLuxLayer
+    inner_network::N
+    rx::Float32
+    ry::Float32
+    rz::Float32
+    cx::Float32
+    cy::Float32
+    cz::Float32
+    smooth_k::Float32
+end
+
+Lux.initialparameters(rng::Random.AbstractRNG, wrapper::ConstrainedNetworkWrapper) = 
+    Lux.initialparameters(rng, wrapper.inner_network)
+
+Lux.initialstates(rng::Random.AbstractRNG, wrapper::ConstrainedNetworkWrapper) = 
+    Lux.initialstates(rng, wrapper.inner_network)
+
+function (wrapper::ConstrainedNetworkWrapper)(x, ps, st)
+    # Call inner network with full parameters
+    inner_result = wrapper.inner_network(x, ps, st)
+    
+    # Extract output and state
+    if inner_result isa Tuple
+        output = inner_result[1]
+        inner_st = length(inner_result) > 1 ? inner_result[2] : nothing
+    else
+        output = inner_result
+        inner_st = nothing
+    end
+    
+    # Store original ndims
+    orig_ndims = ndims(output)
+    
+    # Reshape to 2D
+    output_2d = orig_ndims == 1 ? reshape(output, :, 1) : output
+    x_2d = ndims(x) == 1 ? reshape(x, 4, 1) : x
+    
+    # Extract coordinates [3, batch_size]
+    coords = x_2d[1:3, :]
+    
+    # Vectorized distance using fully vectorized operations
+    # Create center and radii vectors with proper shape [3, 1]
+    center_vec = reshape(Float32[wrapper.cx, wrapper.cy, wrapper.cz], 3, 1)
+    radii_vec = reshape(Float32[wrapper.rx, wrapper.ry, wrapper.rz], 3, 1)
+    
+    # Transfer to GPU if x is on GPU
+    if x isa CUDA.CuArray
+        center_vec = center_vec |> Lux.gpu_device()
+        radii_vec = radii_vec |> Lux.gpu_device()
+    end
+    
+    # Compute all normalized differences at once
+    coords_centered = coords .- center_vec
+    normalized = coords_centered ./ radii_vec
+    
+    # Element-wise square and sum along rows
+    dist_sq = sum(normalized .^ 2, dims=1)
+    
+    # Indicator using sigmoid-like function
+    indicator = 1.0f0 ./ (1.0f0 .+ exp.(-wrapper.smooth_k .* (1.0f0 .- dist_sq)))
+    
+    # Apply constraint to P components (5-7)
+    P = output_2d[5:7, :]
+    P_constrained = P .* indicator
+    
+    # Reconstruct output
+    out_dim = size(output_2d, 1)
+    output_constrained = out_dim <= 7 ? 
+        vcat(output_2d[1:4, :], P_constrained) : 
+        vcat(output_2d[1:4, :], P_constrained, output_2d[8:end, :])
+    
+    # Reshape back to 1D if needed
+    if orig_ndims == 1
+        output_constrained = vec(output_constrained)
+    end
+    
+    return output_constrained, inner_st
+end
+
+"""
     create_constrained_neural_network(inner_network, head_config::HeadConfig; use_derivatives::Bool=true)
 
 Создаёт Lux слой-обёртку для нейронной сети с ограничением на вектор поляризации P.
-
-Это Lux слой, который NeuralPDE корректно распознаёт без использования FromFluxAdaptor.
-
-Вектор поляризации P ограничивается индикаторной функцией головы:
-    P_constrained = P * head_indicator(x, y, z, head_config)
-
-Это гарантирует, что P = 0 вне эллипсоида головы, что влечёт:
-    ρ = -div P = 0 вне головы
-    j = ∂P/∂t = 0 вне головы
-
-Градиенты протекают напрямую через индикаторную функцию.
-
-Индексы выхода:
-- 1: φ (скалярный потенциал)
-- 2-4: A (векторный потенциал)
-- 5-7: P (вектор поляризации) - ОГРАНИЧИВАЕТСЯ
-
-# Параметры:
-- `inner_network`: Внутренняя Lux нейросеть (например, @compact слой)
-- `head_config::HeadConfig`: Конфигурация головы для ограничения
-- `use_derivatives::Bool`: Использовать ли производные (влияет на размер выхода)
-
-# Возвращает:
-- Lux слой (через @compact макрос)
 """
 function create_constrained_neural_network(inner_network, head_config::HeadConfig; use_derivatives::Bool=true)
-    # Pass through to inner network - head constraint disabled for GPU compatibility
-    # The constraint can be applied during post-processing if needed
-    return inner_network
+    if !head_config.enabled
+        return inner_network
+    end
+    
+    return ConstrainedNetworkWrapper(
+        inner_network,
+        Float32(head_config.rx),
+        Float32(head_config.ry),
+        Float32(head_config.rz),
+        Float32(head_config.cx),
+        Float32(head_config.cy),
+        Float32(head_config.cz),
+        Float32(head_config.smooth_k)
+    )
+end
+
+"""
+    apply_head_constraint_to_output(output, coords, head_config)
+
+Apply head constraint to network output using fully vectorized operations.
+This function applies the constraint P = P * head_indicator where the indicator
+is computed using smooth sigmoid for GPU compatibility.
+
+# Arguments:
+- `output`: Network output matrix [output_dim, batch_size]
+- `coords`: Coordinates matrix [3, batch_size] (x, y, z)
+- `head_config::HeadConfig`: Head configuration
+
+# Returns:
+- Constrained output matrix with P components (indices 5-7) multiplied by indicator
+"""
+function apply_head_constraint_to_output(output, coords, head_config::HeadConfig)
+    if !head_config.enabled
+        return output
+    end
+    
+    rx = head_config.rx
+    ry = head_config.ry
+    rz = head_config.rz
+    cx = head_config.cx
+    cy = head_config.cy
+    cz = head_config.cz
+    smooth_k = head_config.smooth_k
+    
+    # Fully vectorized indicator computation
+    # coords is [3, batch_size]
+    center = reshape(Float32[cx, cy, cz], 3, 1)
+    radii = reshape(Float32[rx, ry, rz], 3, 1)
+    
+    # Normalized distance: split into two steps for proper broadcasting
+    coords_centered = coords .- center  # [3, batch_size]
+    normalized = coords_centered ./ radii  # [3, batch_size]
+    
+    # Sum of squares along dimension 1: [1, batch_size]
+    dist_sq = sum(normalized .* normalized, dims=1)
+    
+    # Smooth sigmoid indicator: 1 inside ellipsoid, 0 outside
+    indicator = 1.0f0 ./ (1.0f0 .+ exp.(-smooth_k .* (1.0f0 .- dist_sq)))
+    
+    # Apply to P components (indices 5-7) - broadcast indicator to [3, batch_size]
+    P = output[5:7, :]
+    P_constrained = P .* indicator
+    
+    # Reconstruct output
+    output_constrained = vcat(output[1:4, :], P_constrained, output[8:end, :])
+    
+    return output_constrained
 end
 
 # Сохраняем обратную совместимость - type alias

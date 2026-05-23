@@ -1,0 +1,153 @@
+%% BioMed_Central_Bib_Style_v1.01
+
+\begin{thebibliography}{7}
+% BibTex style file: bmc-mathphys.bst (version 2.1), 2014-07-24
+\ifx \bisbn   \undefined \def \bisbn  #1{ISBN #1}\fi
+\ifx \binits  \undefined \def \binits#1{#1}\fi
+\ifx \bauthor  \undefined \def \bauthor#1{#1}\fi
+\ifx \batitle  \undefined \def \batitle#1{#1}\fi
+\ifx \bjtitle  \undefined \def \bjtitle#1{#1}\fi
+\ifx \bvolume  \undefined \def \bvolume#1{\textbf{#1}}\fi
+\ifx \byear  \undefined \def \byear#1{#1}\fi
+\ifx \bissue  \undefined \def \bissue#1{#1}\fi
+\ifx \bfpage  \undefined \def \bfpage#1{#1}\fi
+\ifx \blpage  \undefined \def \blpage #1{#1}\fi
+\ifx \burl  \undefined \def \burl#1{\textsf{#1}}\fi
+\ifx \doiurl  \undefined \def \doiurl#1{\url{https://doi.org/#1}}\fi
+\ifx \betal  \undefined \def \betal{\textit{et al.}}\fi
+\ifx \binstitute  \undefined \def \binstitute#1{#1}\fi
+\ifx \binstitutionaled  \undefined \def \binstitutionaled#1{#1}\fi
+\ifx \bctitle  \undefined \def \bctitle#1{#1}\fi
+\ifx \beditor  \undefined \def \beditor#1{#1}\fi
+\ifx \bpublisher  \undefined \def \bpublisher#1{#1}\fi
+\ifx \bbtitle  \undefined \def \bbtitle#1{#1}\fi
+\ifx \bedition  \undefined \def \bedition#1{#1}\fi
+\ifx \bseriesno  \undefined \def \bseriesno#1{#1}\fi
+\ifx \blocation  \undefined \def \blocation#1{#1}\fi
+\ifx \bsertitle  \undefined \def \bsertitle#1{#1}\fi
+\ifx \bsnm \undefined \def \bsnm#1{#1}\fi
+\ifx \bsuffix \undefined \def \bsuffix#1{#1}\fi
+\ifx \bparticle \undefined \def \bparticle#1{#1}\fi
+\ifx \barticle \undefined \def \barticle#1{#1}\fi
+\bibcommenthead
+\ifx \bconfdate \undefined \def \bconfdate #1{#1}\fi
+\ifx \botherref \undefined \def \botherref #1{#1}\fi
+\ifx \url \undefined \def \url#1{\textsf{#1}}\fi
+\ifx \bchapter \undefined \def \bchapter#1{#1}\fi
+\ifx \bbook \undefined \def \bbook#1{#1}\fi
+\ifx \bcomment \undefined \def \bcomment#1{#1}\fi
+\ifx \oauthor \undefined \def \oauthor#1{#1}\fi
+\ifx \citeauthoryear \undefined \def \citeauthoryear#1{#1}\fi
+\ifx \endbibitem  \undefined \def \endbibitem {}\fi
+\ifx \bconflocation  \undefined \def \bconflocation#1{#1}\fi
+\ifx \arxivurl  \undefined \def \arxivurl#1{\textsf{#1}}\fi
+\csname PreBibitemsHook\endcsname
+
+%%% 1
+\bibitem[\protect\citeauthoryear{Grech et~al.}{2008}]{Grech2008}
+\begin{botherref}
+\oauthor{\bsnm{Grech}, \binits{R.}},
+\oauthor{\bsnm{Cassar}, \binits{T.}},
+\oauthor{\bsnm{Muscat}, \binits{J.}},
+\oauthor{\bsnm{Camilleri}, \binits{K.P.}},
+\oauthor{\bsnm{Fabri}, \binits{S.G.}},
+\oauthor{\bsnm{Zervakis}, \binits{M.}},
+\oauthor{\bsnm{Xanthopoulos}, \binits{P.}},
+\oauthor{\bsnm{Sakkalis}, \binits{V.}},
+\oauthor{\bsnm{Vanrumste}, \binits{B.}}:
+Review on solving the inverse problem in eeg source analysis.
+Journal of NeuroEngineering and Rehabilitation
+\textbf{5}(1)
+(2008)
+\doiurl{10.1186/1743-0003-5-25}
+\end{botherref}
+\endbibitem
+
+%%% 2
+\bibitem[\protect\citeauthoryear{Weinstein et~al.}{1999}]{Weinstein1999}
+\begin{bchapter}
+\bauthor{\bsnm{Weinstein}, \binits{D.M.}},
+\bauthor{\bsnm{Zhukov}, \binits{L.}},
+\bauthor{\bsnm{Johnson}, \binits{C.R.}}:
+\bctitle{Lead field basis for fem source localization}.
+(\byear{1999}).
+\burl{https://api.semanticscholar.org/CorpusID:11683372}
+\end{bchapter}
+\endbibitem
+
+%%% 3
+\bibitem[\protect\citeauthoryear{Zubov et~al.}{2021}]{Zubov2021}
+\begin{botherref}
+\oauthor{\bsnm{Zubov}, \binits{K.}},
+\oauthor{\bsnm{McCarthy}, \binits{Z.}},
+\oauthor{\bsnm{Ma}, \binits{Y.}},
+\oauthor{\bsnm{Calisto}, \binits{F.}},
+\oauthor{\bsnm{Pagliarino}, \binits{V.}},
+\oauthor{\bsnm{Azeglio}, \binits{S.}},
+\oauthor{\bsnm{Bottero}, \binits{L.}},
+\oauthor{\bsnm{Luján}, \binits{E.}},
+\oauthor{\bsnm{Sulzer}, \binits{V.}},
+\oauthor{\bsnm{Bharambe}, \binits{A.}},
+\oauthor{\bsnm{Vinchhi}, \binits{N.}},
+\oauthor{\bsnm{Balakrishnan}, \binits{K.}},
+\oauthor{\bsnm{Upadhyay}, \binits{D.}},
+\oauthor{\bsnm{Rackauckas}, \binits{C.}}:
+NeuralPDE: Automating Physics-Informed Neural Networks (PINNs) with Error Approximations.
+arXiv
+(2021).
+\doiurl{10.48550/ARXIV.2107.09443}
+\end{botherref}
+\endbibitem
+
+%%% 4
+\bibitem[\protect\citeauthoryear{Billingsley}{1995}]{Billingsley1995}
+\begin{bbook}
+\bauthor{\bsnm{Billingsley}, \binits{P.}}:
+\bbtitle{Probability and Measure},
+\bedition{3rd} edn.
+\bpublisher{John Wiley \& Sons},
+\blocation{New York}
+(\byear{1995})
+\end{bbook}
+\endbibitem
+
+%%% 5
+\bibitem[\protect\citeauthoryear{van~der Vaart}{1998}]{VanDerVaart1998}
+\begin{bbook}
+\bauthor{\bsnm{Vaart}, \binits{A.W.}}:
+\bbtitle{Asymptotic Statistics}.
+\bpublisher{Cambridge University Press},
+\blocation{Cambridge, UK}
+(\byear{1998})
+\end{bbook}
+\endbibitem
+
+%%% 6
+\bibitem[\protect\citeauthoryear{Hoeffding}{1963}]{Hoeffding1963}
+\begin{barticle}
+\bauthor{\bsnm{Hoeffding}, \binits{W.}}:
+\batitle{Probability inequalities for sums of bounded random variables}.
+\bjtitle{Journal of the American Statistical Association}
+\bvolume{58}(\bissue{301}),
+\bfpage{13}--\blpage{30}
+(\byear{1963})
+\end{barticle}
+\endbibitem
+
+%%% 7
+\bibitem[\protect\citeauthoryear{Palummo et~al.}{2024}]{Palummo2024}
+\begin{barticle}
+\bauthor{\bsnm{Palummo}, \binits{A.}},
+\bauthor{\bsnm{Arnone}, \binits{E.}},
+\bauthor{\bsnm{Formaggia}, \binits{L.}},
+\bauthor{\bsnm{Sangalli}, \binits{L.M.}}:
+\batitle{Functional principal component analysis for incomplete space–time data}.
+\bjtitle{Environmental and Ecological Statistics}
+\bvolume{31}(\bissue{2}),
+\bfpage{555}--\blpage{582}
+(\byear{2024})
+\doiurl{10.1007/s10651-024-00598-7}
+\end{barticle}
+\endbibitem
+
+\end{thebibliography}
