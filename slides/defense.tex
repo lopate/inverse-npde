@@ -1,0 +1,225 @@
+\documentclass{beamer}
+\usecolortheme{beaver}
+\beamertemplatenavigationsymbolsempty
+\setbeamertemplate{blocks}[rounded=true, shadow=true]
+\setbeamertemplate{footline}[page number]
+\setbeamertemplate{caption}{\raggedright\insertcaption\par}
+
+\usepackage[utf8]{inputenc}
+\usepackage[english, russian]{babel}
+\usepackage{amssymb,amsfonts,amsmath,mathtext}
+\usepackage{array}
+\usepackage{multicol}
+\usepackage{hhline}
+\usepackage{multirow}
+\usepackage{graphicx}
+\graphicspath{{../figures/}}
+
+\title[Обратные задачи в моделировании nPDE]
+{Обратные задачи в моделировании нейронных дифференциальных уравнений в частных производных}
+
+\author[А. Терентьев]
+{Александр Терентьев}
+
+\institute[МФТИ]
+{
+    Московский физико-технический институт \\
+    Физтех-школа прикладной математики и информатики \\
+    Кафедра интеллектуальных систем \\
+    Научный руководитель: д.ф.-м.н. Стрижов Вадим Викторович
+}
+
+\begin{document}
+
+\frame{\titlepage}
+
+\begin{frame}
+\frametitle{Постановка обратной задачи ЭЭГ}
+
+\begin{block}{Операторная формулировка}
+Пространства: $\mathcal{S}$ ~-- гильбертово пространство распределений поляризации, 
+$\mathcal{F}$ ~-- гильбертово пространство потенциалов, $\mathcal{O} = \mathbb{R}^n$ ~-- пространство наблюдений 
+на $n$ датчиках.
+
+Оператор наблюдения $K$ задаётся композицией оператора потенциала $T$ и оператора измерения $C$:
+\begin{equation}
+    T: \mathcal{S} \to \mathcal{F}, \quad C: \mathcal{F} \to \mathcal{O}, \quad K = C \circ T.
+\end{equation}
+
+Оператор $T$ линеен, ограничен и положительно определён, оператор $C$ линеен и ограничен.
+
+Наблюдаемые данные $d \in \mathcal{O}$, шум $\eta \in \mathcal{O}$ и искомые источники $s$ связаны уравнением:
+\begin{equation}
+    d = K s + \eta
+\end{equation}
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Уравнения Максвелла в операторной постановке}
+Оператор $T: \mathcal{S} \to \mathcal{F}$ определяется как $T\mathbf{P} = (\phi, \mathbf{A})$, где $\phi$ и $\mathbf{A}$ --- решения волновых уравнений:
+
+Плотность заряда и тока:
+\begin{equation}
+    \rho = -\operatorname{div} \mathbf{P}, \quad \mathbf{j} = \frac{\partial \mathbf{P}}{\partial t}.
+\end{equation}
+Уравенения Максвелла для потенциалов:
+\begin{equation}\label{eq:maxwell}
+    \square \phi = 4\pi \nabla \cdot \mathbf{P},
+    \square \mathbf{A} = -\frac{4\pi}{c} \frac{\partial \mathbf{P}}{\partial t}, 
+\end{equation}
+
+где $\square = \nabla^2 - \frac{1}{c^2} \frac{\partial^2}{\partial t^2}$ ~-- оператор Д’Аламбера.
+
+Калибровка Лоренца:
+\begin{equation}
+    \nabla \cdot \mathbf{A} + \frac{1}{c} \frac{\partial \phi}{\partial t} = 0.
+\end{equation}
+
+
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Регуляризация обратной задачи}
+
+\begin{block}{Регуляризованный функционал}
+\begin{equation}
+    J(s) = \|K s - d\|^2 + \alpha \langle T s, s \rangle + \beta \mathrm{TV}(s).
+\end{equation}
+
+Энергетический регуляризатор:
+\begin{equation}
+    \langle T s, s \rangle = \int_{\Omega} (\rho \phi + \mathbf{A} \cdot \mathbf{j}) \, d\mathbf{r} > 0.
+\end{equation}
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Теорема о единственности решения}
+
+\begin{block}{Постановка}
+Пусть $\mathcal{S}, \mathcal{F}$ --- гильбертовы пространства, $\mathcal{O} = \mathbb{R}^n$, $T: \mathcal{S} \to \mathcal{F}$ --- положительно определённый оператор, $C: \mathcal{F} \to \mathcal{O}$ --- ограниченный оператор наблюдения, $\mathrm{TV}: \mathcal{S} \to [0,+\infty]$ --- выпуклый функционал, $\alpha > 0$, $\beta \geq 0$.
+\end{block}
+
+\begin{block}{Функционал}
+\begin{equation}
+    J(s) = \|C T s - d\|_{\mathcal{O}}^2 + \frac{\alpha}{2} \langle T s, s \rangle_{\mathcal{S}} + \beta \mathrm{TV}(s).
+\end{equation}
+\end{block}
+
+\begin{block}{Утверждение}
+Функционал $J(s)$ строго выпукл и имеет единственный глобальный минимум $s^* \in \mathcal{S}$.
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Теорема о сходимости минимизаторов}
+
+\begin{block}{Постановка}
+Пусть $\mathcal{S}, \mathcal{F}, \mathcal{O}$ --- гильбертовы пространства, 
+$T, T_n: \mathcal{S} \to \mathcal{F}$ --- ограниченные линейные операторы, 
+$C: \mathcal{F} \to \mathcal{O}$ --- ограниченный оператор наблюдения, 
+$T$ положительно определён, $\mathrm{TV}: \mathcal{S} \to [0,+\infty]$ --- полная вариация, 
+$\alpha > 0$, $\beta \geq 0$,
+$T_n \to T$ равномерно на ограниченных множествах.
+\end{block}
+
+\begin{block}{Функционалы}
+\begin{align}
+    J(s) &= \|C T s - d\|_{\mathcal{O}}^2 + \frac{\alpha}{2} \langle T s, s \rangle_{\mathcal{S}} + \beta \mathrm{TV}(s), \\
+    J_n(s) &= \|C T_n s - d\|_{\mathcal{O}}^2 + \frac{\alpha}{2} \langle T_n s, s \rangle_{\mathcal{S}} + \beta \mathrm{TV}(s).
+\end{align}
+\end{block}
+
+\begin{block}{Утверждение}
+Тогда минимизаторы $s_n^* = \arg\min J_n(s)$ сходятся к минимизатору $s^* = \arg\min J(s)$ сильно в $\mathcal{S}$ при $n \to \infty$.
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Экспериментальные данные}
+
+\begin{block}{Реальные данные (Brunton et al.)}
+Записи ЭЭГ 13 испытуемых при выполнении когнитивных и моторных задач. Данные предобработаны:
+\begin{itemize}
+    \item Частота дискретизации: 250 Гц.
+    \item Фильтрация: полоса 1–50 Гц.
+    \item Удаление артефактов: метод ICA.
+    \item Нормализация амплитуды сигнала.
+\end{itemize}
+\end{block}
+
+\begin{block}{Синтетические данные}
+Модель овальной головы с 16 датчиками и 2 источниками сигнала:
+\begin{itemize}
+    \item Частота дискретизации: 50 Гц.
+    \item Геометрия: овальная оболочка головы с внутренними источниками.
+    \item Контролируемый уровень шума.
+\end{itemize}
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Экспериментальные результаты}
+
+\begin{block}{Реальные данные (Brunton et al.)}
+\begin{table}[h]
+\centering
+\begin{tabular}{lc}
+\hline
+Метод & Sensor MSE \\
+\hline
+Предложенный метод & 0.025 \\
+LORETA & 0.028 \\
+\hline
+\end{tabular}
+\end{table}
+\end{block}
+
+\begin{block}{Синтетические данные}
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\hline
+Метод & Sensor MSE & Deep MSE \\
+\hline
+Предложенный метод & 0.005 & 0.02 \\
+LORETA & 0.007 & 0.1 \\
+\hline
+\end{tabular}
+\end{table}
+\end{block}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Визуализация синтетической модели}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\textwidth]{synthetic_head_views.png}
+\caption{Синтетическая модель головы с датчиками.}
+\end{figure}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{Выносится на защиту}
+
+\begin{enumerate}
+    \item Получен метод обратной задачи уравнений в частной производной в операторной постановке.
+    \item Доказательство линейности и ограниченности оператора $T$ для уравнений Максвелла.
+    \item Регуляризованный функционал с энергетическим членом и $\mathrm{TV}(s)$.
+    \item Теоремы о сходимости минимизаторов и единственности решения.
+    \item Экспериментальное подтверждение эффективности метода на основе задачи ЭЭГ.
+\end{enumerate}
+
+\end{frame}
+
+\end{document}

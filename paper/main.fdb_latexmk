@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1780694876.23858 "main.aux" "main.bbl" "main" 1780694994.33563 0
+["bibtex main"] 1780699510.71165 "main.aux" "main.bbl" "main" 1780699517.82206 0
   "./npde-bibliography.bib" 1780694097.79326 3264 1b40af6849cf73623cff85648cb1e2db ""
   "./sn-mathphys-num.bst" 1780694097.79326 64141 2560fd4f8e8321a304f732d035eb1b51 ""
-  "main.aux" 1780694993.88103 13711 c3603343283d9129529a6b8ff3431a83 "pdflatex"
+  "main.aux" 1780699517.41989 12405 cf1cbacc5d81a3064ee7abd8b74e9424 "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1780694992.1777 "/home/sasha/inverse-npde/paper/main.tex" "main.pdf" "main" 1780694994.33586 0
+["pdflatex"] 1780699515.68917 "/home/sasha/inverse-npde/paper/main.tex" "main.pdf" "main" 1780699517.82228 0
   "../figures/head_mesh.jpg" 1780694097.74526 52252 365c2b77ef0e936f1b480365aab4a912 ""
   "../figures/head_surface_mesh.jpg" 1780694097.74926 97448 8b48facb8503f4e78246c1fadf9113cf ""
   "../figures/synthetic_head_views.png" 1780694097.77326 326023 7c81e8e1bf21030492024d0032d939f4 ""
@@ -29,10 +29,9 @@
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lati0900.tfm" 1766244496.47835 3528 9a6e36225f5d1c1540f120e54b292925 ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/lati1000.tfm" 1766244641.85035 3528 defd551e32c4af414f9b54b8101bfa9b ""
   "/home/sasha/.texlive2023/texmf-var/fonts/tfm/lh/lh-t2a/latt1000.tfm" 1766244508.41835 1272 55f67101730a20777decd892fb4b4e3e ""
-  "/home/sasha/inverse-npde/paper/main.tex" 1780694991.66103 106161 338cdeac75c0e27971456f2a97eee853 ""
+  "/home/sasha/inverse-npde/paper/main.tex" 1780699515.00789 103690 02f45fc169453aa821d80d506eea920d ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm1000.tfm" 1136768653 1536 e07581a4bb3136ece9eeb4c3ffab8233 ""
-  "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcti1000.tfm" 1136768653 2048 3777f70f4372b17e2d3fda2b5684af05 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmbsy6.tfm" 1246382020 1124 14ccf5552bc7f77ca02a8a402bea8bfb ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmbsy8.tfm" 1246382020 1120 200be8b775682cdf80acad4be5ef57e4 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmex7.tfm" 1246382020 1004 54797486969f23fa377b128694d548df ""
@@ -344,10 +343,10 @@
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1766213231.68777 5472669 54eaf61a88b6b7896ebd0dac973cb29c ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1766213297 8214364 485d2b52162761f4f77dcbde39f44314 ""
   "bst/sn-jnl.cls" 1780694097.77726 55331 d7cf5cb282c5c6c90059534004dcdf13 ""
-  "main.aux" 1780694993.88103 13711 c3603343283d9129529a6b8ff3431a83 "pdflatex"
-  "main.bbl" 1780694876.36106 5427 234a0706175f70783669940da3c7ff2e "bibtex main"
-  "main.out" 1780694993.88103 15310 639e2887da40a6a697c93c4acd43c89c "pdflatex"
-  "main.tex" 1780694991.66103 106161 338cdeac75c0e27971456f2a97eee853 ""
+  "main.aux" 1780699517.41989 12405 cf1cbacc5d81a3064ee7abd8b74e9424 "pdflatex"
+  "main.bbl" 1780699510.83989 5427 234a0706175f70783669940da3c7ff2e "bibtex main"
+  "main.out" 1780699517.41989 12692 35811dd801ad4c7842f9efe6c53418d8 "pdflatex"
+  "main.tex" 1780699515.00789 103690 02f45fc169453aa821d80d506eea920d ""
   (generated)
   "main.aux"
   "main.log"
